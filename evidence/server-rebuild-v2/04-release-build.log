@@ -1,0 +1,419 @@
+Command (repository root): cargo build --release --locked
+Normalization: <repo> and <toolchains> replace local absolute roots.
+
+   Compiling libc v0.2.183
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling version_check v0.9.5
+   Compiling cfg-if v1.0.4
+   Compiling zeroize v1.8.2
+   Compiling typenum v1.19.0
+   Compiling subtle v2.6.1
+   Compiling bytes v1.11.1
+   Compiling shlex v1.3.0
+   Compiling find-msvc-tools v0.1.9
+   Compiling pin-project-lite v0.2.17
+   Compiling const-oid v0.9.6
+   Compiling once_cell v1.21.4
+   Compiling itoa v1.0.18
+   Compiling generic-array v0.14.9
+   Compiling memchr v2.8.0
+   Compiling futures-core v0.3.32
+   Compiling serde_core v1.0.228
+   Compiling smallvec v1.15.1
+   Compiling futures-sink v0.3.32
+   Compiling slab v0.4.12
+   Compiling cpufeatures v0.2.17
+   Compiling httparse v1.10.1
+   Compiling futures-channel v0.3.32
+   Compiling foldhash v0.2.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling hashbrown v0.16.1
+   Compiling futures-io v0.3.32
+   Compiling futures-task v0.3.32
+   Compiling base64ct v1.8.3
+   Compiling syn v2.0.117
+   Compiling zerocopy v0.8.47
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling rand_core v0.6.4
+   Compiling signal-hook-registry v1.4.8
+   Compiling socket2 v0.6.3
+   Compiling jobserver v0.1.34
+   Compiling mio v1.1.1
+   Compiling pem-rfc7468 v0.7.0
+   Compiling http v1.5.0
+   Compiling vcpkg v0.2.15
+   Compiling crypto-common v0.1.6
+   Compiling cc v1.2.57
+   Compiling block-buffer v0.10.4
+   Compiling digest v0.10.7
+   Compiling pkg-config v0.3.32
+   Compiling der v0.7.10
+   Compiling equivalent v1.0.2
+   Compiling hybrid-array v0.4.8
+   Compiling tracing-core v0.1.36
+   Compiling proc-macro2-diagnostics v0.10.1
+   Compiling serde v1.0.228
+   Compiling fnv v1.0.7
+   Compiling percent-encoding v2.3.2
+   Compiling yansi v1.0.1
+   Compiling bitflags v2.11.0
+   Compiling cmake v0.1.57
+   Compiling spki v0.7.3
+   Compiling indexmap v2.13.0
+   Compiling pkcs8 v0.10.2
+   Compiling hmac v0.12.1
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling litemap v0.8.1
+   Compiling writeable v0.6.2
+   Compiling log v0.4.29
+   Compiling openssl-sys v0.9.112
+   Compiling crypto-common v0.2.1
+   Compiling icu_properties_data v2.1.2
+   Compiling aws-lc-sys v0.39.0
+   Compiling icu_normalizer_data v2.1.1
+   Compiling hkdf v0.12.4
+   Compiling ff v0.13.1
+   Compiling tower-service v0.3.3
+   Compiling try-lock v0.2.5
+   Compiling time-core v0.1.8
+   Compiling base16ct v0.2.0
+   Compiling num-conv v0.2.0
+   Compiling sec1 v0.7.3
+   Compiling want v0.3.1
+   Compiling group v0.13.0
+   Compiling time-macros v0.2.27
+   Compiling signature v2.2.0
+   Compiling sha2 v0.10.9
+   Compiling inout v0.1.4
+   Compiling crypto-bigint v0.5.5
+   Compiling cookie v0.18.1
+   Compiling libm v0.2.16
+   Compiling autocfg v1.5.0
+   Compiling aws-lc-rs v1.16.2
+   Compiling ref-cast v1.0.25
+   Compiling spin v0.9.8
+   Compiling getrandom v0.3.4
+   Compiling num-traits v0.2.19
+   Compiling cipher v0.4.4
+   Compiling universal-hash v0.5.1
+   Compiling opaque-debug v0.3.1
+   Compiling openssl v0.10.76
+   Compiling openssl-probe v0.2.1
+   Compiling foreign-types-shared v0.1.1
+   Compiling foreign-types v0.3.2
+   Compiling polyval v0.6.2
+   Compiling rfc6979 v0.4.0
+   Compiling synstructure v0.13.2
+   Compiling http-body v1.0.1
+   Compiling rustls-pki-types v1.14.0
+   Compiling anyhow v1.0.102
+   Compiling elliptic-curve v0.13.8
+   Compiling cmov v0.5.4
+   Compiling either v1.15.0
+   Compiling utf8_iter v1.0.4
+   Compiling zmij v1.0.21
+   Compiling powerfmt v0.2.0
+   Compiling parking_lot_core v0.9.12
+   Compiling ppv-lite86 v0.2.21
+   Compiling native-tls v0.2.18
+   Compiling futures-util v0.3.32
+   Compiling deranged v0.5.8
+   Compiling rand_chacha v0.3.1
+   Compiling rand v0.8.5
+   Compiling http v0.2.12
+   Compiling ctutils v0.4.8
+   Compiling tokio-macros v2.6.1
+   Compiling zerofrom-derive v0.1.6
+   Compiling yoke-derive v0.8.1
+   Compiling futures-macro v0.3.32
+   Compiling zerovec-derive v0.11.2
+   Compiling displaydoc v0.2.5
+   Compiling tokio v1.50.0
+   Compiling tracing-attributes v0.1.31
+   Compiling serde_derive v1.0.228
+   Compiling pear_codegen v0.2.9
+   Compiling openssl-macros v0.1.1
+   Compiling ref-cast-impl v1.0.25
+   Compiling zerofrom v0.1.6
+   Compiling yoke v0.8.1
+   Compiling zerotrie v0.2.3
+   Compiling zerovec v0.11.5
+   Compiling ecdsa v0.16.9
+   Compiling tracing v0.1.44
+   Compiling tinystr v0.8.2
+   Compiling potential_utf v0.1.4
+   Compiling icu_collections v2.1.1
+   Compiling ghash v0.5.1
+   Compiling icu_locale_core v2.1.1
+   Compiling ctr v0.9.2
+   Compiling aes v0.8.4
+   Compiling lazy_static v1.5.0
+   Compiling form_urlencoded v1.2.2
+   Compiling block-buffer v0.12.1
+   Compiling aead v0.5.2
+   Compiling icu_provider v2.1.1
+   Compiling is-terminal v0.4.17
+   Compiling uncased v0.9.10
+   Compiling icu_normalizer v2.1.1
+   Compiling icu_properties v2.1.2
+   Compiling atomic-waker v1.1.2
+   Compiling ipnet v2.12.0
+   Compiling scopeguard v1.2.0
+   Compiling rustls v0.23.37
+   Compiling const-oid v0.10.3
+   Compiling thiserror v1.0.69
+   Compiling untrusted v0.9.0
+   Compiling serde_json v1.0.151
+   Compiling digest v0.11.3
+   Compiling devise_core v0.4.2
+   Compiling lock_api v0.4.14
+   Compiling toml_datetime v0.6.11
+   Compiling idna_adapter v1.2.1
+   Compiling idna v1.1.0
+   Compiling serde_spanned v0.6.9
+   Compiling tokio-util v0.7.18
+   Compiling url v2.5.8
+   Compiling aes-gcm v0.10.3
+   Compiling h2 v0.4.13
+   Compiling http-body v0.4.6
+   Compiling time v0.3.47
+   Compiling thiserror-impl v1.0.69
+   Compiling num-integer v0.1.46
+   Compiling primeorder v0.13.6
+   Compiling inout v0.2.2
+   Compiling socket2 v0.5.10
+   Compiling toml_write v0.1.2
+   Compiling pin-utils v0.1.0
+   Compiling tinyvec_macros v0.1.1
+   Compiling winnow v0.7.15
+   Compiling rustix v1.1.4
+   Compiling num-bigint-dig v0.8.6
+   Compiling getrandom v0.4.2
+   Compiling inlinable_string v0.1.15
+   Compiling utf8parse v0.2.2
+   Compiling httpdate v1.0.3
+   Compiling thiserror v2.0.18
+   Compiling heck v0.5.0
+   Compiling base64 v0.22.1
+   Compiling futures v0.3.32
+   Compiling stable-pattern v0.1.0
+   Compiling hyper v0.14.32
+   Compiling pear v0.2.9
+   Compiling hyper v1.8.1
+   Compiling toml_edit v0.22.27
+   Compiling anstyle-parse v1.0.0
+   Compiling tinyvec v1.11.0
+   Compiling cipher v0.5.1
+   Compiling parking_lot v0.12.5
+   Compiling num-iter v0.1.45
+   Compiling h2 v0.3.27
+   Compiling devise_codegen v0.4.2
+   Compiling async-trait v0.1.89
+   Compiling thiserror-impl v2.0.18
+   Compiling rand_core v0.9.5
+   Compiling aho-corasick v1.1.4
+   Compiling figment v0.10.19
+   Compiling multer v3.1.0
+   Compiling encoding_rs v0.8.35
+   Compiling colorchoice v1.0.5
+   Compiling state v0.6.0
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling data-encoding v2.10.0
+   Compiling cpubits v0.1.0
+   Compiling anstyle v1.0.14
+   Compiling regex-syntax v0.8.10
+   Compiling anstyle-query v1.1.5
+   Compiling mime v0.3.17
+   Compiling linux-raw-sys v0.12.1
+   Compiling rocket_http v0.5.1
+   Compiling regex-automata v0.4.14
+   Compiling anstream v1.0.0
+   Compiling aes v0.9.0-rc.4
+   Compiling toml v0.8.23
+   Compiling rand_chacha v0.9.0
+   Compiling devise v0.4.2
+   Compiling unicode-normalization v0.1.25
+   Compiling hyper-util v0.1.20
+   Compiling p256 v0.13.2
+   Compiling tokio-native-tls v0.3.1
+   Compiling hmac v0.13.0
+   Compiling async-stream-impl v0.3.6
+   Compiling libsqlite3-sys v0.36.0
+   Compiling pkcs1 v0.7.5
+   Compiling sync_wrapper v1.0.2
+   Compiling rocket v0.5.1
+   Compiling prometheus v0.13.4
+   Compiling fastrand v2.3.0
+   Compiling unicode-xid v0.2.6
+   Compiling unicode-bidi v0.3.18
+   Compiling glob v0.3.3
+   Compiling cpufeatures v0.3.1
+   Compiling byteorder v1.5.0
+   Compiling tower-layer v0.3.3
+   Compiling idna v0.4.0
+   Compiling aes-keywrap v0.9.0
+   Compiling rocket_codegen v0.5.1
+   Compiling tower v0.5.3
+   Compiling rsa v0.9.10
+   Compiling tempfile v3.27.0
+   Compiling sha2 v0.11.1
+   Compiling regex v1.12.3
+   Compiling async-stream v0.3.6
+   Compiling hkdf v0.13.0
+   Compiling rand v0.9.2
+   Compiling enum-as-inner v0.6.1
+   Compiling ece-native v0.5.0
+   Compiling tokio-stream v0.1.18
+   Compiling ubyte v0.10.4
+   Compiling itertools v0.14.0
+   Compiling rustls-native-certs v0.8.3
+   Compiling http-body-util v0.1.3
+   Compiling sha1 v0.10.6
+   Compiling hmac-sha256 v1.1.14
+   Compiling hmac-sha512 v1.1.12
+   Compiling num_cpus v1.17.0
+   Compiling linked-hash-map v0.5.6
+   Compiling arrayref v0.3.9
+   Compiling strsim v0.11.1
+   Compiling constant_time_eq v0.4.2
+   Compiling option-ext v0.2.0
+   Compiling atomic v0.5.3
+   Compiling eyre v0.6.12
+   Compiling arrayvec v0.7.6
+   Compiling ct-codecs v1.1.6
+   Compiling iri-string v0.7.11
+   Compiling clap_lex v1.1.0
+   Compiling binascii v0.1.4
+   Compiling utf-8 v0.7.6
+   Compiling ed25519-compact v2.2.0
+   Compiling prost-derive v0.14.3
+   Compiling tungstenite v0.28.0
+   Compiling clap_builder v4.6.0
+   Compiling blake2b_simd v1.0.4
+   Compiling dirs-sys v0.5.0
+   Compiling lru-cache v0.1.2
+   Compiling superboring v0.1.7
+   Compiling tower-http v0.6.8
+   Compiling hyper-tls v0.6.0
+   Compiling trust-dns-proto v0.23.2
+   Compiling web-push-native v0.5.0
+   Compiling env_filter v1.0.1
+   Compiling clap_derive v4.6.0
+   Compiling p384 v0.13.1
+   Compiling k256 v0.13.4
+   Compiling hashlink v0.11.0
+   Compiling coarsetime v0.1.37
+   Compiling jiff v0.2.23
+   Compiling hmac-sha1-compact v1.1.7
+   Compiling binstring v0.1.7
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling resolv-conf v0.7.6
+   Compiling fallible-iterator v0.3.0
+   Compiling indenter v0.3.4
+   Compiling trust-dns-resolver v0.23.2
+   Compiling jwt-simple v0.12.14
+   Compiling clap v4.6.0
+   Compiling colliesocket-push v0.1.0 (<repo>/crates/colliesocket-push)
+   Compiling prost v0.14.3
+   Compiling directories v6.0.0
+   Compiling tokio-tungstenite v0.28.0
+   Compiling ip_rfc v0.1.0
+   Compiling qrcodegen v1.8.0
+   Compiling env_logger v0.11.10
+   Compiling rocket_prometheus v0.10.1
+   Compiling rustls-webpki v0.103.10
+   Compiling tokio-rustls v0.26.4
+   Compiling rustls-platform-verifier v0.6.2
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.13.2
+   Compiling rusqlite v0.38.0
+   Compiling mollysocket v1.7.1 (<repo>)
+warning: methods `update_last_registration` and `rm` are never used
+   --> src/db.rs:116:12
+    |
+ 90 | impl MollySocketDb {
+    | ------------------ methods in this implementation
+...
+116 |     pub fn update_last_registration(&self, uuid: &str) -> Result<()> {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+152 |     pub fn rm(&self, uuid: &str) -> Result<()> {
+    |            ^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: function `validate_subscription` is never used
+   --> src/push_store.rs:289:8
+    |
+289 | pub fn validate_subscription(subscription: &Subscription) -> Result<()> {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `attempt` is never read
+   --> src/push_store.rs:358:9
+    |
+354 | pub struct QueuedEvent {
+    |            ----------- field in this struct
+...
+358 |     pub attempt: u32,
+    |         ^^^^^^^
+
+warning: method `pending_count` is never used
+   --> src/push_store.rs:770:12
+    |
+407 | impl PushStore {
+    | -------------- method in this implementation
+...
+770 |     pub fn pending_count(&self, account_id: Option<&str>) -> Result<usize> {
+    |            ^^^^^^^^^^^^^
+
+warning: function `url_to_svg_qr` is never used
+  --> src/qrcode.rs:57:8
+   |
+57 | pub fn url_to_svg_qr(url: &Url) -> String {
+   |        ^^^^^^^^^^^^^
+
+warning: function `anonymize_url` is never used
+ --> src/utils.rs:7:8
+  |
+7 | pub fn anonymize_url(_: &str) -> String {
+  |        ^^^^^^^^^^^^^
+
+warning: function `ping` is never used
+  --> src/utils.rs:13:14
+   |
+13 | pub async fn ping(_: Url) -> Result<reqwest::Response> {
+   |              ^^^^
+
+warning: struct `PaymentAddress` is never constructed
+    --> src/ws/proto_signalservice.rs:2170:12
+     |
+2170 | pub struct PaymentAddress {
+     |            ^^^^^^^^^^^^^^
+
+warning: struct `Amount` is never constructed
+   --> src/ws/proto_signalservice.rs:781:20
+    |
+781 |         pub struct Amount {
+    |                    ^^^^^^
+
+warning: enum `Amount` is never used
+   --> src/ws/proto_signalservice.rs:795:22
+    |
+795 |             pub enum Amount {
+    |                      ^^^^^^
+
+warning: enum `Address` is never used
+    --> src/ws/proto_signalservice.rs:2186:14
+     |
+2186 |     pub enum Address {
+     |              ^^^^^^^
+
+warning: `mollysocket` (bin "mollysocket") generated 11 warnings
+    Finished `release` profile [optimized] target(s) in 1m 36s
+
+Exit code: 0
+Elapsed seconds: 96.974

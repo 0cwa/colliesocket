@@ -1,0 +1,6 @@
+Command (repository root): cargo fmt --all
+Normalization: <repo> and <toolchains> replace local absolute roots.
+
+
+Exit code: 0
+Elapsed seconds: 0.103

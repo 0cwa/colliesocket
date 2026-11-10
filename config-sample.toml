@@ -3,3 +3,12 @@ allowed_endpoints = ['*']
 allowed_uuids = ['*']
 webserver = true
 port = 8020
+
+# CollieSocket v1: private enrollment; no HTTP registration.
+# Keep the database in a service-owned0700 directory with0600 database files.
+# Legacy wake-only mode is off; an explicit Unix expiry may be at most24h ahead.
+legacy_wake_until = 0
+# Synthetic tests may run the outbox without Signal connections.
+push_only = false
+# Readiness always binds127.0.0.1; do not expose this port through an edge.
+ready_port = 8021
