@@ -26,9 +26,13 @@ fn generate_vapid() {
 }
 
 fn print_vapid_for_endpoint(endpoint: &str) {
-    let origin = url::Url::parse(endpoint)
-        .expect(&format!("Could not parse {}.", endpoint))
-        .origin();
+    let origin = match url::Url::parse(endpoint) {
+        Ok(url) => url.origin(),
+        Err(_) => {
+            crate::cli::print_result(Err("invalid_endpoint"));
+            return;
+        }
+    };
     let header = match vapid::get_vapid_header(origin) {
         Err(e) if matches!(e.downcast_ref(), Some(vapid::Error::VapidKeyError)) => {
             println!("{}", e);

@@ -1,130 +1,100 @@
-use std::str::FromStr;
-
-use crate::{
-    config, db,
-    utils::{self, anonymize_url},
-};
+use crate::{config, db, push, push_store::PushStore, utils::post_allowed};
 use clap::Subcommand;
-use lazy_static::lazy_static;
-use regex::Regex;
-use url::Url;
+use serde_json::json;
 
 #[derive(Subcommand)]
 pub enum ConnectionCommand {
-    /// Add a new account connection
+    /// Add a legacy wake-only connection when explicitly enabled.
     Add {
-        /// Account UUID
         account_id: String,
-
-        /// Device number
-        #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+        #[arg(value_parser=clap::value_parser!(u32).range(1..))]
         device_id: u32,
-
-        /// Device token
         password: String,
-
-        /// UnifiedPush endpoint
         endpoint: String,
     },
-
-    /// List all account connections
+    /// List registration state without passwords, keys or endpoints.
     List {
-        /// Anonymize account id and password
         #[arg(short, long)]
         anonymized: bool,
     },
-
-    /// Remove account connection
-    Remove {
-        /// Account UUID
-        account_id: String,
-    },
-
-    /// Send test notification to the endpoint associated
-    Ping {
-        /// Account UUID
-        account_id: String,
-    },
+    /// Remove local state without unlinking the Signal device.
+    Remove { account_id: String },
+    /// Queue an encrypted test; explicit legacy mode sends only a generic wake.
+    Ping { account_id: String },
 }
 
 pub async fn connection(command: &ConnectionCommand) {
-    match command {
+    let result = match command {
         ConnectionCommand::Add {
             account_id,
             device_id,
             password,
             endpoint,
-        } => add(account_id, device_id, password, endpoint).await,
-        ConnectionCommand::List { anonymized } => list(*anonymized),
-        ConnectionCommand::Remove { account_id } => rm(account_id),
+        } => add(account_id, *device_id, password, endpoint).await,
+        ConnectionCommand::List { anonymized: _ } => PushStore::open(config::get_db())
+            .and_then(|s| s.list_redacted())
+            .map(|rows| json!({"encrypted_accounts":rows}))
+            .map_err(|e| e.code()),
+        ConnectionCommand::Remove { account_id } => PushStore::open(config::get_db())
+            .and_then(|mut s| s.remove(account_id))
+            .map(|removed| json!({"removed":removed,"signal_unlinked":false}))
+            .map_err(|e| e.code()),
         ConnectionCommand::Ping { account_id } => ping(account_id).await,
-    }
+    };
+    crate::cli::print_result(result);
 }
-
-async fn add(uuid: &str, device_id: &u32, password: &str, endpoint: &str) {
-    if !config::is_uuid_valid(uuid) {
-        println!("UUID invalid or forbidden: {}", uuid);
-        return;
+async fn add(
+    account: &str,
+    device: u32,
+    password: &str,
+    endpoint: &str,
+) -> Result<serde_json::Value, &'static str> {
+    if !config::legacy_wake_enabled() {
+        return Err("legacy_disabled");
+    }
+    if push::enrolled(account)? {
+        return Err("encryption_required");
+    }
+    if !config::is_uuid_valid(account) {
+        return Err("invalid_enrollment");
     }
     if !config::is_endpoint_valid(endpoint).await {
-        println!("Endpoint invalid or forbidden: {}", endpoint);
-        return;
+        return Err("invalid_endpoint");
     }
-    let _ = db::MollySocketDb::new().unwrap().add(&db::Connection::new(
-        uuid.to_string(),
-        *device_id,
-        password.to_string(),
-        endpoint.to_string(),
-    ));
-    if let Err(e) = utils::ping(Url::from_str(endpoint).unwrap()).await {
-        log::warn!("Could not ping the new connection (uuid={}): {e:?}", uuid);
-    }
-    println!("Connection for {} added.", uuid);
-}
-
-fn list(anonymized: bool) {
-    lazy_static! {
-        static ref RE: Regex = Regex::new(r"[^-]").unwrap();
-    }
-    if anonymized {
-        println!("
-/!\\ The endpoints are not fully anonymized. /!\\
-This is required to help to debug some setups. You should unregister Molly from your distributor to get a new endpoint if you share this output.
-");
-    }
+    let co = db::Connection::new(account.into(), device, password.into(), endpoint.into());
     db::MollySocketDb::new()
-        .unwrap()
-        .list()
-        .unwrap()
-        .iter_mut()
-        .for_each(|connection| {
-            if anonymized {
-                connection.uuid = format!(
-                    "{}{}",
-                    &connection.uuid[..4],
-                    RE.replace_all(&connection.uuid[4..], "x")
-                );
-                connection.password = RE.replace_all(&connection.password, "x").into();
-                connection.endpoint = anonymize_url(&connection.endpoint);
-            }
-            dbg!(&connection);
-        });
-}
-
-fn rm(uuid: &str) {
-    db::MollySocketDb::new().unwrap().rm(uuid).unwrap();
-    println!("Connection for {} successfully removed.", uuid)
-}
-
-async fn ping(uuid: &str) {
-    let connection = match db::MollySocketDb::new().unwrap().get(uuid) {
-        Ok(c) => c,
-        Err(_) => {
-            println!("No connection found with this Id");
-            return;
+        .map_err(|_| "state_unavailable")?
+        .add(&co)
+        .map_err(|_| "state_unavailable")?;
+    if push::legacy_connection_is_current(&co)? {
+        let url = url::Url::parse(endpoint).map_err(|_| "invalid_endpoint")?;
+        // A provider failure is not an enrollment rollback or device unlink.
+        if post_allowed::post_legacy_wake(url).await.is_err() {
+            log::warn!("legacy_wake_failed");
         }
-    };
-    let url = url::Url::parse(&connection.endpoint).unwrap();
-    // We unwrap to catch some config errors
-    utils::ping(url).await.unwrap();
+    }
+    Ok(json!({"registered":true,"mode":"legacy_wake"}))
+}
+async fn ping(account: &str) -> Result<serde_json::Value, &'static str> {
+    if push::enrolled(account)? {
+        return push::enqueue(account, "test", None);
+    }
+    if !config::legacy_wake_enabled() {
+        return Err("legacy_disabled");
+    }
+    let co = db::MollySocketDb::new()
+        .map_err(|_| "state_unavailable")?
+        .get(account)
+        .map_err(|_| "not_found")?;
+    if !push::legacy_connection_is_current(&co)? {
+        return Err("encryption_required");
+    }
+    let url = url::Url::parse(&co.endpoint).map_err(|_| "invalid_endpoint")?;
+    let response = post_allowed::post_legacy_wake(url)
+        .await
+        .map_err(|_| "state_unavailable")?;
+    if !response.status().is_success() {
+        return Err("state_unavailable");
+    }
+    Ok(json!({"provider_accepted":true}))
 }
