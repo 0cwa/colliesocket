@@ -1,147 +1,101 @@
+//! Observe private enrollment changes without an HTTP registration channel.
 use crate::{
+    config,
     db::Connection,
-    server::{DB, KILL_VEC, METRICS, NEW_CO_TX},
+    server::{DB, METRICS},
     ws::{SignalWebSocket, SignalWebSocketError},
 };
-use eyre::Result;
-use futures_channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use futures_util::{future::join_all, join, select, Future, FutureExt, StreamExt};
-
-/**
-Associates the kill channel to the [Connection][crate::db::Connection]#uuid.
-*/
-pub struct KillLoopRef {
-    uuid: String,
-    tx: UnboundedSender<bool>,
-}
-
-pub type OptSender = Option<UnboundedSender<Connection>>;
-
+use futures_channel::mpsc;
+use futures_util::{
+    future::{AbortHandle, Abortable, LocalBoxFuture},
+    stream::FuturesUnordered,
+    Future, FutureExt, StreamExt,
+};
+use std::{collections::HashMap, sync::Mutex, time::Duration};
 pub async fn run() {
-    let mut connections = DB.list().unwrap();
-    let loops: Vec<_> = connections
-        .iter_mut()
-        .map(|co| connection_loop(co).fuse())
-        .collect();
-
-    let (new_connections_tx, new_connections_rx) = mpsc::unbounded();
-    {
-        let mut s_tx = NEW_CO_TX.lock().unwrap();
-        *s_tx = Some(new_connections_tx);
+    if config::push_only() {
+        std::future::pending::<()>().await;
+        return;
     }
-
-    let new_loops = gen_new_loops(new_connections_rx).fuse();
-
-    join!(join_all(loops), new_loops);
-}
-
-pub async fn gen_new_loops(rx: UnboundedReceiver<Connection>) {
-    rx.for_each_concurrent(None, |mut co| async move {
-        kill(&co.uuid).await;
-        connection_loop(&mut co).await;
-    })
-    .await;
-}
-
-async fn connection_loop(co: &mut Connection) {
+    let mut active: HashMap<String, ([u8; 32], u64, AbortHandle)> = HashMap::new();
+    let mut jobs: FuturesUnordered<LocalBoxFuture<'static, (String, u64)>> =
+        FuturesUnordered::new();
+    let mut generation = 0u64;
+    let mut poll = tokio::time::interval(Duration::from_secs(5));
     loop {
-        if co.forbidden {
-            log::info!("Ignoring connection for {}", &co.uuid);
-            METRICS.forbiddens.inc();
-            return;
-        }
-        log::info!("Starting connection for {}", &co.uuid);
-        let mut socket =
-            match SignalWebSocket::new(&co.uuid, co.device_id, &co.password, &co.endpoint) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::info!("An error occurred for {}: {}", co.uuid, e);
-                    return;
+        tokio::select! {
+            _=poll.tick()=>{
+                let Ok(connections)=DB.list()else{log::warn!("connection_state_unavailable");continue};
+                let enrolled=match crate::push_store::PushStore::open(config::get_db()).and_then(|s|s.list_enrolled_account_ids()){
+                    Ok(ids)=>ids,Err(_)=>{log::warn!("connection_state_unavailable");continue}
+                };
+                let mut wanted=HashMap::new();
+                for co in connections{
+                    let encrypted_mode=enrolled.contains(&co.uuid);
+                    if co.forbidden||!config::is_uuid_valid(&co.uuid)||!(encrypted_mode||config::legacy_wake_enabled()){continue}
+                    if wanted.len()>=4096{log::warn!("connection_capacity_exceeded");break}
+                    let bytes=serde_json::to_vec(&serde_json::json!([co.device_id,co.password,co.endpoint,encrypted_mode])).expect("state_unavailable");
+                    let digest=openssl::sha::sha256(&bytes);
+                    wanted.insert(co.uuid.clone(),digest);
+                    if active.get(&co.uuid).is_some_and(|(old,_,_)|old==&digest){continue}
+                    if let Some((_,_,handle))=active.remove(&co.uuid){handle.abort();}
+                    let (handle,registration)=AbortHandle::new_pair();
+                    let id=co.uuid.clone();generation=generation.wrapping_add(1);let current=generation;
+                    active.insert(id.clone(),(digest,current,handle));
+                    jobs.push(async move{let _=Abortable::new(connection_loop(co,encrypted_mode),registration).await;(id,current)}.boxed_local());
                 }
-            };
-        let metrics_future = set_metrics(&mut socket);
-        // Add the channel to kill the connection if needed
-        let (kill_tx, mut kill_rx) = mpsc::unbounded();
-        {
-            KILL_VEC.lock().unwrap().push(KillLoopRef {
-                uuid: co.uuid.clone(),
-                tx: kill_tx,
-            });
-        }
-        METRICS.connections.inc();
-        // bool to stop looping if the connection has been explicitly killed.
-        let mut stop_loop = false;
-        // loop connection
-        select!(
-            res = socket.connection_loop().fuse() => handle_connection_closed(res, co),
-            _ = metrics_future.fuse() => log::warn!("[{}] One of the metrics channel has been closed.", co.uuid),
-            _ = kill_rx.next().fuse() => {
-                log::info!("[{}] Connection killed", co.uuid);
-                // We don't want the loop to restart if the connection has been killed.
-                stop_loop = true;
-                },
-        );
-        // Remove the channel to kill the connection
-        let mut refs = KILL_VEC.lock().unwrap();
-        if let Some(i_ref) = refs.iter().position(|l_ref| l_ref.uuid.eq(&co.uuid)) {
-            refs.remove(i_ref);
-        }
-        METRICS.connections.dec();
-        // the connection has been killed, we don't loop.
-        if stop_loop {
-            return;
-        }
-    }
-}
-
-fn set_metrics(socket: &mut SignalWebSocket) -> impl Future<Output = ()> {
-    let (on_message_tx, on_message_rx) = mpsc::unbounded::<u32>();
-    let (on_push_tx, on_push_rx) = mpsc::unbounded::<u32>();
-    let (on_reconnection_tx, on_reconnection_rx) = mpsc::unbounded::<u32>();
-    socket.channels.on_message_tx = Some(on_message_tx);
-    socket.channels.on_push_tx = Some(on_push_tx);
-    socket.channels.on_reconnection_tx = Some(on_reconnection_tx);
-    async move {
-        select!(
-            _ = on_message_rx
-                .for_each(|_| async {
-                    METRICS.messages.inc();
-                })
-                .fuse() => (),
-            _ = on_push_rx
-                .for_each(|_| async {
-                    METRICS.pushs.inc();
-                })
-                .fuse() => (),
-            _ = on_reconnection_rx
-                .for_each(|_| async {
-                    METRICS.reconnections.inc();
-                })
-                .fuse() => (),
-        )
-    }
-}
-
-fn handle_connection_closed(res: Result<()>, co: &mut Connection) {
-    log::debug!("Connection closed.");
-
-    match res {
-        Ok(()) => (),
-        Err(error) => {
-            if let Some(SignalWebSocketError::RegistrationRemoved) =
-                error.downcast_ref::<SignalWebSocketError>()
-            {
-                log::info!("Disabling connection for {}", &co.uuid);
-                co.forbidden = true;
-                let _ = DB.add(co);
+                active.retain(|id,(digest,_,handle)|if wanted.get(id)==Some(digest){true}else{handle.abort();false});
+            },
+            Some((id,finished))=jobs.next(),if !jobs.is_empty()=>{
+                if active.get(&id).is_some_and(|(_,current,_)|*current==finished){active.remove(&id);}
             }
         }
     }
 }
-
-async fn kill(uuid: &str) {
-    let refs = KILL_VEC.lock().unwrap();
-    if let Some(l_ref) = refs.iter().find(|&l_ref| l_ref.uuid.eq(uuid)) {
-        let _ = l_ref.tx.clone().unbounded_send(true);
+async fn connection_loop(co: Connection, encrypted_mode: bool) {
+    let Ok(mut socket) = SignalWebSocket::new(
+        &co.uuid,
+        co.device_id,
+        &co.password,
+        &co.endpoint,
+        encrypted_mode,
+    ) else {
+        log::warn!("signal_connection_configuration_failed");
+        return;
+    };
+    let metrics = set_metrics(&mut socket);
+    METRICS.connections.inc();
+    struct ConnectionMetric;
+    impl Drop for ConnectionMetric {
+        fn drop(&mut self) {
+            METRICS.connections.dec();
+        }
+    }
+    let _metric = ConnectionMetric;
+    tokio::select! {
+        result=socket.connection_loop()=>{
+            if result.err().is_some_and(|e|matches!(e.downcast_ref::<SignalWebSocketError>(),Some(SignalWebSocketError::RegistrationRemoved))){
+                // Only Signal authentication failure can mark these exact local
+                // credentials forbidden. No late old-worker status or unlink.
+                if DB.forbid_if_current(&co).unwrap_or(false){METRICS.forbiddens.inc();log::info!("signal_credentials_rejected");}
+            }
+        },
+        _=metrics=>log::warn!("signal_metrics_channel_closed"),
+    }
+}
+fn set_metrics(socket: &mut SignalWebSocket) -> impl Future<Output = ()> {
+    // futures mpsc has one reserved slot per retained sender:31+1=32.
+    let (message_tx, message_rx) = mpsc::channel::<u32>(31);
+    let (push_tx, push_rx) = mpsc::channel::<u32>(31);
+    let (reconnect_tx, reconnect_rx) = mpsc::channel::<u32>(31);
+    socket.channels.on_message_tx = Some(Mutex::new(message_tx));
+    socket.channels.on_push_tx = Some(Mutex::new(push_tx));
+    socket.channels.on_reconnection_tx = Some(Mutex::new(reconnect_tx));
+    async move {
+        tokio::select! {
+            _=message_rx.for_each(|_|async{METRICS.messages.inc();})=>{},
+            _=push_rx.for_each(|_|async{METRICS.pushs.inc();})=>{},
+            _=reconnect_rx.for_each(|_|async{METRICS.reconnections.inc();})=>{},
+        }
     }
 }

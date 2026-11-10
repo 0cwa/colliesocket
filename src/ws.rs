@@ -1,4 +1,6 @@
+#[rustfmt::skip]
 mod proto_signalservice;
+#[rustfmt::skip]
 mod proto_websocketresources;
 mod signalwebsocket;
 mod tls;
