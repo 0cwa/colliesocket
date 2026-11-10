@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-11-10T20:44:24Z",
+  "verification": "Raw HTTPS registry index bytes SHA-256 matched Docker-Content-Digest; Linux amd64 and arm64 child entries inspected. No image layers were downloaded and no image was executed.",
+  "images": [
+    {
+      "repository": "docker.io/library/rust",
+      "tag": "1.90.0-bookworm",
+      "index_digest": "sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        {
+          "digest": "sha256:3f6e6f8d8725a65a2db964bb828850f888d430c68784d661f753144e5d787207",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "digest": "sha256:4c632e493dfa97f0fe014c3910d1690c149bba85ed8678d47d3563ec6f258ead",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux",
+            "variant": "v8"
+          }
+        }
+      ],
+      "role": "builder",
+      "manifest_file": "images/registry-manifests/rust-1.90.0-bookworm.json",
+      "registry_url": "https://registry-1.docker.io/v2/library/rust/manifests/sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f"
+    },
+    {
+      "repository": "docker.io/library/debian",
+      "tag": "bookworm-slim",
+      "index_digest": "sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        {
+          "digest": "sha256:c67e92c8099ba22853ab4cfda7cfb494d253d6012ca82dee98ba8976772af018",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "digest": "sha256:ec8534cda2cb30f29f44f23e135297af7a1496f2990fd8e4e84aa36b081a757a",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux",
+            "variant": "v8"
+          }
+        }
+      ],
+      "role": "runtime",
+      "manifest_file": "images/registry-manifests/debian-bookworm-slim.json",
+      "registry_url": "https://registry-1.docker.io/v2/library/debian/manifests/sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc"
+    },
+    {
+      "repository": "docker.io/docker/dockerfile",
+      "tag": "1.7.1",
+      "index_digest": "sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        {
+          "digest": "sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "digest": "sha256:c8678869a83fab70232869ba24acc1c0be661f4d65135c0eeacb6a8e78420fdd",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux"
+          }
+        }
+      ],
+      "role": "frontend",
+      "manifest_file": "images/registry-manifests/docker-dockerfile-1.7.1.json",
+      "registry_url": "https://registry-1.docker.io/v2/docker/dockerfile/manifests/sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e"
+    },
+    {
+      "repository": "docker.io/moby/buildkit",
+      "tag": "v0.34.2",
+      "index_digest": "sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        {
+          "digest": "sha256:92f93f25966c544549b88144406ce8cd9dcdf5df128250711031a4acd9149a8e",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux"
+          }
+        },
+        {
+          "digest": "sha256:97719ccb2ac86fb44fd36f330a6d302f63dddd5326f3ada24f9c05ccac0d9098",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        }
+      ],
+      "role": "buildkit",
+      "manifest_file": "images/registry-manifests/moby-buildkit-v0.34.2.json",
+      "registry_url": "https://registry-1.docker.io/v2/moby/buildkit/manifests/sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe"
+    }
+  ],
+  "buildx": {
+    "version": "v0.38.2",
+    "release_url": "https://github.com/docker/buildx/releases/tag/v0.38.2",
+    "release_digest_metadata": {
+      "linux/amd64": "sha256:7992ec09413b80ff57ba4e081f56fc833d7bac1d5e71143c6c809e7e6065f6d6",
+      "linux/arm64": "sha256:46c0f334772de3cb0b341cc415caf7339fb5cfc8b8438ebcb5a10e7f23800d36"
+    },
+    "binary_download_verification": "NOT RUN locally"
+  },
+  "actions": [
+    {
+      "repository": "actions/checkout",
+      "commit": "11d5960a326750d5838078e36cf38b85af677262"
+    },
+    {
+      "repository": "actions/setup-python",
+      "commit": "a26af69be951a213d495a4c3e4e4022e16d87065"
+    },
+    {
+      "repository": "docker/setup-buildx-action",
+      "commit": "8d2750c68a42422c14e847fe6c8ac0403b4cbd6f"
+    },
+    {
+      "repository": "actions/upload-artifact",
+      "commit": "ea165f8d65b6e75b540449e92b4886f43607fa02"
+    }
+  ],
+  "runner_labels": {
+    "linux/amd64": "ubuntu-24.04",
+    "linux/arm64": "ubuntu-24.04-arm"
+  },
+  "runner_reference": "https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories",
+  "publication": "No registry push, release, or production deployment."
+}

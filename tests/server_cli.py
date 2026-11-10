@@ -161,7 +161,16 @@ class Harness:
             for key, value in os.environ.items()
             if not key.startswith(("MOLLY_", "ROCKET_")) and key != "RUST_LOG"
         }
-        self.env["RUST_LOG"] = "trace"
+        # Long dependency selectors used to override later base-module Off
+        # rules. Exercise real HTTP/worker paths with that configuration too.
+        self.env["RUST_LOG"] = ",".join([
+            "trace", "mollysocket=trace", "reqwest::async_impl::client=trace",
+            "reqwest::connect=trace", "hyper::proto::h1::io=trace",
+            "hyper_util::client::legacy::connect::http=trace", "h2::proto::streams=trace",
+            "rustls::client::hs=trace", "tungstenite::handshake::client=trace",
+            "tungstenite::protocol=trace", "tokio_tungstenite::compat=trace",
+            "trust_dns_resolver::name_server=trace", "rocket::server=trace",
+        ])
         self.env["TMPDIR"] = str(directory)
         self.enrollment = json.loads(
             (ROOT / "contracts/encrypted-push/v1/fixtures/enrollment-valid.json").read_text()
@@ -585,7 +594,7 @@ class Harness:
             self.metadata["receiver_private"], encoded(self.new_auth), encoded(self.recovered_auth),
         ]
         require(all(marker.encode() not in joined for marker in canaries), "CLI or worker trace output exposed a synthetic secret canary")
-        self.mark("trace-level CLI/worker/config/error output excludes endpoint,password,auth,and receiver-key canaries")
+        self.mark("trace plus specific dependency selectors cannot expose endpoint,password,auth,or receiver-key canaries in CLI/worker output")
         sent = self.provider.count
         require(self.cli("connection", "remove", ACCOUNT) == {"removed": True, "signal_unlinked": False}, "local removal implies Signal unlink")
         require(self.cli("connection", "remove", ACCOUNT) == {"removed": False, "signal_unlinked": False}, "local removal is not idempotent")

@@ -1,0 +1,89 @@
+Command (repository root): cargo build --release --locked
+Normalization: <repo> and <toolchains> replace local absolute roots.
+
+   Compiling mollysocket v1.7.1 (<repo>)
+warning: methods `update_last_registration` and `rm` are never used
+   --> src/db.rs:116:12
+    |
+ 90 | impl MollySocketDb {
+    | ------------------ methods in this implementation
+...
+116 |     pub fn update_last_registration(&self, uuid: &str) -> Result<()> {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+152 |     pub fn rm(&self, uuid: &str) -> Result<()> {
+    |            ^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: function `validate_subscription` is never used
+   --> src/push_store.rs:289:8
+    |
+289 | pub fn validate_subscription(subscription: &Subscription) -> Result<()> {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `attempt` is never read
+   --> src/push_store.rs:358:9
+    |
+354 | pub struct QueuedEvent {
+    |            ----------- field in this struct
+...
+358 |     pub attempt: u32,
+    |         ^^^^^^^
+
+warning: method `pending_count` is never used
+   --> src/push_store.rs:770:12
+    |
+407 | impl PushStore {
+    | -------------- method in this implementation
+...
+770 |     pub fn pending_count(&self, account_id: Option<&str>) -> Result<usize> {
+    |            ^^^^^^^^^^^^^
+
+warning: function `url_to_svg_qr` is never used
+  --> src/qrcode.rs:57:8
+   |
+57 | pub fn url_to_svg_qr(url: &Url) -> String {
+   |        ^^^^^^^^^^^^^
+
+warning: function `anonymize_url` is never used
+ --> src/utils.rs:7:8
+  |
+7 | pub fn anonymize_url(_: &str) -> String {
+  |        ^^^^^^^^^^^^^
+
+warning: function `ping` is never used
+  --> src/utils.rs:13:14
+   |
+13 | pub async fn ping(_: Url) -> Result<reqwest::Response> {
+   |              ^^^^
+
+warning: struct `PaymentAddress` is never constructed
+    --> src/ws/proto_signalservice.rs:2170:12
+     |
+2170 | pub struct PaymentAddress {
+     |            ^^^^^^^^^^^^^^
+
+warning: struct `Amount` is never constructed
+   --> src/ws/proto_signalservice.rs:781:20
+    |
+781 |         pub struct Amount {
+    |                    ^^^^^^
+
+warning: enum `Amount` is never used
+   --> src/ws/proto_signalservice.rs:795:22
+    |
+795 |             pub enum Amount {
+    |                      ^^^^^^
+
+warning: enum `Address` is never used
+    --> src/ws/proto_signalservice.rs:2186:14
+     |
+2186 |     pub enum Address {
+     |              ^^^^^^^
+
+warning: `mollysocket` (bin "mollysocket") generated 11 warnings
+    Finished `release` profile [optimized] target(s) in 52.52s
+
+Exit code: 0
+Elapsed seconds: 52.583
