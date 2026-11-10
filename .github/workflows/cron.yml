@@ -12,6 +12,8 @@ concurrency:
 
 jobs:
   build:
+    # Retain upstream automation without allowing fork publication.
+    if: github.repository == 'mollyim/mollysocket'
     runs-on: ubuntu-latest
     strategy:
       matrix:
