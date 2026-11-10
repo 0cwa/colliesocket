@@ -17,6 +17,14 @@ loopback and disables legacy wake mode by default. Upstream release installation
 and web pairing instructions retained below do not configure this candidate.
 The versioned runtime contract takes precedence on this work branch.
 
+The [published READY handoff](handoff/parallel-start-v2.json) pins the shared
+contract. Use the [server operator guide](docs/encrypted-push-server-v1.md) for
+private imports, migration and rollback, and the [image guide](docs/IMAGE.md)
+for the pinned local build and CI interface. Server candidate manifests under
+[`handoff/`](handoff/) record exact implementation pins and separate PASS from
+NOT RUN gates. Android, physical-device, deployment and shipping security
+acceptance are separate from the local synthetic server checks.
+
 ## Upstream MollySocket documentation
 
 MollySocket allows getting signal notifications via [UnifiedPush](https://unifiedpush.org/). It works like a linked device, which doesn't have an encryption key, connected to the Signal server. Everytime it receives an encrypted event, it notifies your mobile via UnifiedPush.

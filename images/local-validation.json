@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "result": "PASS for source checks; image execution NOT RUN",
+  "recorded_at": "2026-11-10T21:00:17.466996+00:00",
+  "git_base_commit": "6ae1167452336e408c7acc684d712eddb368c883",
+  "source_state": "Image/CI files are uncommitted working-tree inputs; final candidate commit is recorded separately by the owner.",
+  "environment": {
+    "python": "3.12.14",
+    "machine": "x86_64",
+    "docker": "unavailable",
+    "podman": "unavailable"
+  },
+  "checks": [
+    {
+      "check": "Python AST parsing",
+      "result": "PASS",
+      "files": [
+        "tools/image/check-pins.py",
+        "tools/image/metadata.py",
+        "tools/image/smoke.py"
+      ]
+    },
+    {
+      "check": "Bash syntax",
+      "result": "PASS",
+      "command": [
+        "bash",
+        "-n",
+        "tools/image/build.sh"
+      ]
+    },
+    {
+      "check": "POSIX shell syntax",
+      "result": "PASS",
+      "command": [
+        "sh",
+        "-n",
+        "tools/image/collect-runtime.sh"
+      ]
+    },
+    {
+      "check": "Committed registry hashes, architecture entries and action pins",
+      "result": "PASS",
+      "command": [
+        "python3",
+        "tools/image/check-pins.py"
+      ]
+    },
+    {
+      "check": "YAML parse, byte-intact C0 bootstrap prefix, standard public native runners and read-only permissions",
+      "result": "PASS",
+      "pyyaml": "6.0.3",
+      "bootstrap_commit": "0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f",
+      "bootstrap_workflow_sha256": "d6b37c3d4af3125f82d044133e4ba4732d067a17f67829f1d9fc6c9f727fea74"
+    },
+    {
+      "check": "Frozen contract preservation",
+      "result": "PASS",
+      "command": [
+        "python3",
+        "contracts/encrypted-push/v1/tools/conformance.py"
+      ]
+    },
+    {
+      "check": "Image smoke invocation",
+      "result": "NOT RUN",
+      "reason": "Docker executable unavailable",
+      "exit_code": 77,
+      "command": "python3 tools/image/smoke.py colliesocket:test-amd64 --platform linux/amd64 --output OUTSIDE_CHECKOUT/image-smoke.json"
+    }
+  ],
+  "online_registry_verification": {
+    "result": "PASS",
+    "command": "python3 tools/image/check-pins.py --online",
+    "registry_indexes": 4,
+    "note": "Exact immutable registry index bodies fetched and compared; no layers pulled or images executed."
+  },
+  "contract_manifest_sha256": "226bff31ca34b23e411929812ab86105ee970d0aab84848b1b53b18edff21568",
+  "contract_cases": {
+    "result": "PASS",
+    "schema_cases": 76,
+    "reference_receiver_cases": 14,
+    "immutable_file_hashes": 80,
+    "not_run": [
+      "Android",
+      "device/Keystore",
+      "DNS/address validation",
+      "server durable state"
+    ]
+  },
+  "source_files": [
+    {
+      "path": "Containerfile.colliesocket",
+      "sha256": "30394120e22bc85538805fbb85bc1039f4c6ad3ae6064eca3ae0333dd3938b4e"
+    },
+    {
+      "path": ".dockerignore",
+      "sha256": "34285127810b0bba4e5cab55c7e13a53e748e390e1600f181bc1cabafc87b05f"
+    },
+    {
+      "path": ".github/workflows/test.yml",
+      "sha256": "a2473775d5eefc453b55f633e8ce5f6763ac7d0916f5fb4a730f5d213e275c13"
+    },
+    {
+      "path": "docs/IMAGE.md",
+      "sha256": "9ed63a24fa27f215ffebe876526bcadfb63fbf6e3ab50158bfef3c65b02de1cd"
+    },
+    {
+      "path": "images/base-pins.json",
+      "sha256": "8cbaa07ce3a13c9f6e3c1decd63e23d3cb9f809f7c21a122242b3687a83d491f"
+    },
+    {
+      "path": "tools/image/build.sh",
+      "sha256": "eea6d415be2a8a41b1482ade95dd9d76ae5dbfb0e41a90b9b9cffba4e8e178fa"
+    },
+    {
+      "path": "tools/image/check-pins.py",
+      "sha256": "40abeb8b5815079435db983e8fda613eb43f12e6fedd48e4af245270b1fe9945"
+    },
+    {
+      "path": "tools/image/collect-runtime.sh",
+      "sha256": "1449e09e7837438af10258fe5ddc1757e3602857b14d862ed518bd9c3ecdcc68"
+    },
+    {
+      "path": "tools/image/metadata.py",
+      "sha256": "a9052f20ed2ac353970c1aa00e947449a6604e03dd02d326357987b61ab8850d"
+    },
+    {
+      "path": "tools/image/smoke.py",
+      "sha256": "a9a0159927735e1cda4bb5dff0fec335a2ba94bbf3becdb2c54983ae5313e434"
+    },
+    {
+      "path": "images/registry-manifests/debian-bookworm-slim.json",
+      "sha256": "734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc"
+    },
+    {
+      "path": "images/registry-manifests/docker-dockerfile-1.7.1.json",
+      "sha256": "a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e"
+    },
+    {
+      "path": "images/registry-manifests/moby-buildkit-v0.34.2.json",
+      "sha256": "c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe"
+    },
+    {
+      "path": "images/registry-manifests/rust-1.90.0-bookworm.json",
+      "sha256": "3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f"
+    }
+  ],
+  "not_run": [
+    "Docker image builds: linux/amd64 and linux/arm64",
+    "Image runtime/packaging smoke on either architecture",
+    "Repeated image digest reproducibility",
+    "Observed GitHub Actions execution",
+    "Real Signal/distributor/Android/lock acceptance",
+    "Deployment and combined-system tests",
+    "Shipping security review"
+  ],
+  "image_manifest_digest": null,
+  "image_configuration_digest": null,
+  "registry_publication": "NOT RUN; not requested"
+}
