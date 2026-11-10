@@ -249,7 +249,10 @@ acknowledgment from that receiver. See the
 
 Migration adds schema 2 encrypted state while retaining upstream connection
 columns. Existing connections are preserved, but legacy wake sending remains
-disabled unless explicitly enabled for a bounded period. Before migration:
+disabled unless explicitly enabled for a bounded period. Opening state with
+the candidate can apply migrations automatically, including from server startup
+or a CLI command; complete the backup before the candidate first opens an
+existing database. Before migration:
 
 1. Stop the server and any concurrent CLI drain/import processes. Confirm they
    have exited before handling state files.

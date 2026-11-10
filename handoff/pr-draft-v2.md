@@ -36,6 +36,10 @@ without waiting for full shipping acceptance.
   and CLI compatibility where it fits the v1 trust boundary. CollieSocket is
   the project name; this does not rename release engineering or transfer
   ownership of the other workstreams.
+- Adds the pinned [image build and CI interface](../docs/IMAGE.md), with native
+  amd64/arm64 jobs, local archive output and private packaging smoke checks.
+  The workflow does not push a registry image or publish a release. Actual
+  image execution remains a separately reported gate.
 
 The scope excludes message previews, Signal plaintext, new Signal decryption
 keys, richer event content, HTTP pairing, production rollout, and automatic
