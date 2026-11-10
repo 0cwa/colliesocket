@@ -4,7 +4,13 @@ use figment::{
     Figment,
 };
 use serde::{Deserialize, Serialize};
-use std::{env, fmt::Debug, path::PathBuf, process, sync::OnceLock};
+use std::{
+    env,
+    fmt::{self, Debug},
+    path::PathBuf,
+    process,
+    sync::OnceLock,
+};
 
 use crate::utils::post_allowed::ResolveAllowed;
 
@@ -16,7 +22,7 @@ pub enum SignalEnvironment {
     Staging,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Config {
     host: String,
     port: u16,
@@ -27,6 +33,22 @@ struct Config {
     allowed_endpoints: Vec<String>,
     allowed_uuids: Vec<String>,
     db: String,
+    legacy_wake_until: i64,
+    push_only: bool,
+    ready_port: u16,
+}
+
+impl Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("webserver", &self.webserver)
+            .field("push_only", &self.push_only)
+            .field("ready_port", &self.ready_port)
+            .field("secrets", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -48,6 +70,9 @@ impl Default for Config {
             allowed_endpoints: vec![String::from("*")],
             allowed_uuids: vec![String::from("*")],
             db: String::from("./mollysocket.db"),
+            legacy_wake_until: 0,
+            push_only: false,
+            ready_port: 8021,
         }
     }
 }
@@ -67,6 +92,17 @@ pub fn get_host() -> &'static str {
 
 pub fn get_port() -> u16 {
     get_cfg().port
+}
+
+pub fn get_ready_port() -> u16 {
+    get_cfg().ready_port
+}
+pub fn push_only() -> bool {
+    get_cfg().push_only
+}
+pub fn legacy_wake_enabled() -> bool {
+    let deadline = get_cfg().legacy_wake_until;
+    deadline > 0 && crate::push::now() < deadline
 }
 
 pub fn is_uuid_valid(uuid: &str) -> bool {
@@ -105,7 +141,7 @@ pub fn load_config(cli_config_path: Option<PathBuf>) {
         figment = figment.merge(Serialized::defaults(Config::default()));
 
         if let Some(path) = get_config_path(cli_config_path) {
-            log::info!("Config file: {}", path.display());
+            log::info!("Config file supplied");
             figment = figment.merge(Toml::file(path));
         } else {
             log::info!("No config file supplied");
@@ -115,20 +151,37 @@ pub fn load_config(cli_config_path: Option<PathBuf>) {
 
         let mut config: Config = match figment.extract() {
             Ok(config) => config,
-            Err(figment_err) => {
-                for err in figment_err {
-                    log::error!("Config parse error: {}", err);
-                }
+            Err(_) => {
+                log::error!("invalid_configuration");
                 process::exit(0x0001);
             }
         };
         if let Some(file) = &config.vapid_key_file {
             config.vapid_privkey = Some(
-                std::fs::read_to_string(file)
-                    .expect("Cannot read MOLLY_VAPID_KEY_FILE")
-                    .trim_end()
-                    .to_string(),
+                String::from_utf8(
+                    crate::enrollment::read_protected_file(std::path::Path::new(file), 4096)
+                        .unwrap_or_else(|_| {
+                            eprintln!("unsafe_secret_file");
+                            process::exit(1)
+                        }),
+                )
+                .unwrap_or_else(|_| {
+                    eprintln!("invalid_secret_file");
+                    process::exit(1)
+                })
+                .trim_end()
+                .to_string(),
             );
+        }
+        if config.legacy_wake_until < 0
+            || config.legacy_wake_until > crate::push::now().saturating_add(86400)
+        {
+            eprintln!("invalid_legacy_deadline");
+            process::exit(1);
+        }
+        if config.ready_port == 0 {
+            eprintln!("invalid_configuration");
+            process::exit(1);
         }
         config
     });
@@ -142,7 +195,8 @@ fn get_config_path(cli_config_path: Option<PathBuf>) -> Option<PathBuf> {
         if cli_path.exists() {
             return Some(cli_path);
         } else {
-            panic!("{} not found.", cli_path.display());
+            eprintln!("invalid_configuration");
+            process::exit(1);
         }
     }
 
@@ -152,7 +206,8 @@ fn get_config_path(cli_config_path: Option<PathBuf>) -> Option<PathBuf> {
         if path.exists() {
             return Some(path);
         } else {
-            panic!("MOLLY_CONF={}, file not found.", path.display());
+            eprintln!("invalid_configuration");
+            process::exit(1);
         }
     }
 
@@ -180,42 +235,34 @@ fn get_config_path(cli_config_path: Option<PathBuf>) -> Option<PathBuf> {
 impl Config {
     fn is_uuid_valid(&self, uuid: &str) -> bool {
         self.allowed_uuids
-            .clone()
             .iter()
             .any(|allowed| allowed == "*" || allowed == uuid)
     }
 
-    fn endpoint_to_conf(&self, url: &url::Url) -> String {
-        let mut conf_url = url::Url::parse("http://example.tld/").unwrap();
-        let _ = conf_url.set_scheme(url.scheme());
-        let _ = conf_url.set_host(url.host_str());
-        let _ = conf_url.set_port(url.port());
-        let _ = conf_url.set_username(url.username());
-        let _ = conf_url.set_password(url.password());
-        conf_url.into()
-    }
-
     async fn is_endpoint_valid(&self, url: &str) -> bool {
+        if url.len() > 2048 || !url.is_ascii() || url.bytes().any(|b| b <= 32 || b == 127) {
+            return false;
+        }
+        if url.contains('\\')
+            || url.split_once("://").is_none_or(|(_, tail)| {
+                tail.split(['/', '?', '#'])
+                    .next()
+                    .unwrap_or("")
+                    .contains('@')
+            })
+        {
+            return false;
+        }
         if let Ok(url) = url::Url::parse(url) {
             let endpoint_validity = self.is_url_endpoint_valid(&url).await;
             match endpoint_validity {
                 EndpointValidity::Ok => true,
                 EndpointValidity::NotInConfig => {
-                    log::warn!(
-                        "Endpoint not allowed: {}\n\
-You may want to add \"{}\" to allowed_endpoints",
-                        url,
-                        self.endpoint_to_conf(&url)
-                    );
+                    log::warn!("endpoint_not_allowed");
                     false
                 }
                 EndpointValidity::Private => {
-                    log::warn!(
-                        "Endpoint resolves to a private IP: {}\n\
-You may want to add \"{}\" to allowed_endpoints",
-                        url,
-                        self.endpoint_to_conf(&url)
-                    );
+                    log::warn!("endpoint_address_not_allowed");
                     false
                 }
             }
@@ -231,10 +278,18 @@ You may want to add \"{}\" to allowed_endpoints",
         }
     }
     async fn is_url_endpoint_valid(&self, url: &url::Url) -> EndpointValidity {
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+        {
+            return EndpointValidity::NotInConfig;
+        }
         if self.is_endpoint_allowed_by_user(url) {
             EndpointValidity::Ok
         } else {
-            if self.allowed_endpoints.contains(&"*".into()) {
+            if url.scheme() == "https" && self.allowed_endpoints.iter().any(|s| s == "*") {
                 if url.resolve_allowed().await.unwrap_or(vec![]).len().gt(&0) {
                     EndpointValidity::Ok
                 } else {
@@ -247,13 +302,35 @@ You may want to add \"{}\" to allowed_endpoints",
     }
 
     fn is_endpoint_allowed_by_user(&self, url: &url::Url) -> bool {
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+        {
+            return false;
+        }
         self.allowed_endpoints.iter().any(|allowed| {
+            if allowed.len() > 2048
+                || !allowed.is_ascii()
+                || allowed.bytes().any(|b| b <= 32 || b == 127)
+                || allowed.contains(['\\', '?', '#'])
+                || allowed
+                    .split_once("://")
+                    .is_none_or(|(_, tail)| tail.split('/').next().unwrap_or("").contains('@'))
+            {
+                return false;
+            }
             if let Ok(allowed_url) = url::Url::parse(allowed) {
                 url.host() == allowed_url.host()
-                    && url.port() == allowed_url.port()
+                    && url.port_or_known_default() == allowed_url.port_or_known_default()
                     && url.scheme() == allowed_url.scheme()
-                    && url.username() == allowed_url.username()
-                    && url.password() == allowed_url.password()
+                    && allowed_url.username().is_empty()
+                    && allowed_url.password().is_none()
+                    && allowed_url.query().is_none()
+                    && allowed_url.fragment().is_none()
+                    && allowed_url.path() == "/"
+                    && allowed_url.port_or_known_default().is_some_and(|p| p != 0)
             } else {
                 false
             }
@@ -268,11 +345,11 @@ mod tests {
     fn test_config(uuid: &str, endpoint: &str) -> Config {
         let allowed_uuids = vec![String::from(uuid)];
         let allowed_endpoints = vec![String::from(endpoint)];
-        dbg!(Config {
+        Config {
             allowed_endpoints,
             allowed_uuids,
             ..Config::default()
-        })
+        }
     }
 
     #[test]
@@ -321,10 +398,10 @@ mod tests {
         assert_eq!(
             cfg.is_url_endpoint_valid(&url::Url::parse("http://ntfy.sh/foo?blah").unwrap())
                 .await,
-            EndpointValidity::Ok
+            EndpointValidity::NotInConfig
         );
         assert_eq!(
-            cfg.is_url_endpoint_valid(&url::Url::parse("http://localhost/foo?blah").unwrap())
+            cfg.is_url_endpoint_valid(&url::Url::parse("https://127.0.0.1/foo?blah").unwrap())
                 .await,
             EndpointValidity::Private
         );

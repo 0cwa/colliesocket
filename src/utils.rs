@@ -1,20 +1,41 @@
-use eyre::Result;
-use rocket::serde::json::json;
+use eyre::{eyre, Result};
 use url::Url;
 
 pub mod post_allowed;
 
-pub fn anonymize_url(url_in: &str) -> String {
-    let mut mut_url = url::Url::parse(url_in).unwrap();
-    mut_url.set_host(Some("fake.domain.tld")).unwrap();
-    let path = format!("{}...", &mut_url.path()[..5]);
-    mut_url.set_path(&path);
-    mut_url.path();
-    mut_url.into()
+/// Kept for callers using the upstream helper; never retain path/query tokens.
+pub fn anonymize_url(_: &str) -> String {
+    "[redacted endpoint]".into()
 }
 
-pub async fn ping(url: Url) -> Result<reqwest::Response> {
-    let res = post_allowed::post_allowed(url, &json!({"test":true}), Some("test")).await?;
-    res.error_for_status_ref()?;
-    Ok(res)
+/// A bare endpoint has no account, epoch, or encryption capability context.
+/// Account-aware CLI commands use guarded enqueue or explicit legacy wake.
+pub async fn ping(_: Url) -> Result<reqwest::Response> {
+    Err(eyre!("encryption_required"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn endpoint_redaction_is_total_and_never_parses_input() {
+        for input in [
+            "",
+            "a",
+            "https://user:secret@example.test/TOKEN?secret=SECRET",
+            "not a URL",
+        ] {
+            assert_eq!(anonymize_url(input), "[redacted endpoint]");
+        }
+    }
+    #[tokio::test]
+    async fn bare_url_ping_fails_without_configuration_or_network() {
+        assert_eq!(
+            ping(Url::parse("https://example.test/SECRET").unwrap())
+                .await
+                .unwrap_err()
+                .to_string(),
+            "encryption_required"
+        );
+    }
 }
