@@ -1,0 +1,76 @@
+   Compiling colliesocket-push v0.1.0 (<repository>/crates/colliesocket-push)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+     Running unittests src/lib.rs (crates/colliesocket-push/target/debug/deps/colliesocket_push-8e3874b52d24dc0f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/encryption.rs (crates/colliesocket-push/target/debug/deps/encryption-3be30651192f0952)
+
+running 5 tests
+test malformed_keys_rejected_without_panics_or_secret_errors ... ok
+test published_rfc8291_vector_matches_every_byte ... ok
+test committed_deterministic_fixtures_match_fresh_rust_output ... ok
+test random_production_sender_uses_fresh_salt_and_ephemeral_key ... ok
+test exact_size_limits_include_framing_and_json_padding ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests colliesocket_push
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+{
+  "result": "PASS",
+  "scope": "Independent Python/OpenSSL check of actual Rust-generated output; not Android acceptance",
+  "python": "3.12.14",
+  "cryptography": "50.0.0",
+  "openssl": "OpenSSL 4.0.1 9 Jun 2026",
+  "positive_checks": [
+    "published-vector-and-intermediates",
+    "deterministic-rust-byte-match",
+    "random-production-sender-decrypt",
+    "json-whitespace-padding",
+    "fixture-hashes",
+    "valid-rfc-padding"
+  ],
+  "negative_checks_passed": 35,
+  "not_run": [
+    "physical-android",
+    "lock-behavior",
+    "real-distributor",
+    "production-enrollment",
+    "security-audit"
+  ]
+}
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running `crates/colliesocket-push/target/debug/examples/generate_fixtures <temporary-directory>/colliesocket-push.PxWMyP`
+rfc8291.bin bytes=144 sha256=f976e174457c5111a0b05234e648bc012cb1e2b37949afce4d7b1e84752953c7
+wake-v1.bin bytes=4096 sha256=a11eea15599df53ab22059568e87331977a8712461ba4b69c582fe5a5022464d
+sender-random.bin bytes=4096 sha256=bee04014c0f475048bc5e0690ac5c93e25f2418e653a1f0329072d6b095424fc
+{
+  "result": "PASS",
+  "scope": "Independent Python/OpenSSL check of actual Rust-generated output; not Android acceptance",
+  "python": "3.12.14",
+  "cryptography": "50.0.0",
+  "openssl": "OpenSSL 4.0.1 9 Jun 2026",
+  "positive_checks": [
+    "published-vector-and-intermediates",
+    "deterministic-rust-byte-match",
+    "random-production-sender-decrypt",
+    "json-whitespace-padding",
+    "fixture-hashes",
+    "valid-rfc-padding"
+  ],
+  "negative_checks_passed": 35,
+  "not_run": [
+    "physical-android",
+    "lock-behavior",
+    "real-distributor",
+    "production-enrollment",
+    "security-audit"
+  ]
+}

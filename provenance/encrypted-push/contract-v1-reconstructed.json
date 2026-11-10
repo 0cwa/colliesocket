@@ -1,0 +1,18 @@
+{
+  "provenance_version": 1,
+  "label": "contract-v1-reconstructed",
+  "authored_commit": "80ab713255cb3bdef6a9a6c7d9c0efe3b6a2a8d5",
+  "authored_tree": "365c74aefdad5b47ed2ebdcb4ff9d2850f269be9",
+  "parent": "f1e10c97d4644df4d326b9d7dedb160b297d41ca",
+  "author": "0cwa <0@none.org>",
+  "committer": "ChatGPT <codex@openai.com>",
+  "bundle": "provenance/encrypted-push/contract-v1-reconstructed.bundle",
+  "bundle_sha256": "4f35dd61927d482c0d825b2ad3d73ff64b6a44f3bf958354d1b1117993873b29",
+  "bundle_prerequisite": "f1e10c97d4644df4d326b9d7dedb160b297d41ca",
+  "publication": "Canonical GitHub API transport commits carry this exact source plus authored provenance. Their actual author/committer metadata is GitHub-provided and is not relabeled as the patch author. The canonical commit is reported externally/in a subsequent handoff; no self hash is embedded.",
+  "signatures_or_signoffs_added": false,
+  "verification_commands": [
+    "git bundle verify provenance/encrypted-push/contract-v1-reconstructed.bundle",
+    "git fetch provenance/encrypted-push/contract-v1-reconstructed.bundle refs/colliesocket/authored/contract-v1-reconstructed"
+  ]
+}
