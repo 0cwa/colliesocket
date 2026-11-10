@@ -12,6 +12,8 @@ concurrency:
 
 jobs:
   build:
+    # Retain upstream automation without allowing fork publication.
+    if: github.repository == 'mollyim/mollysocket'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -110,7 +112,7 @@ jobs:
     name: Publish
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ github.repository == 'mollyim/mollysocket' && startsWith(github.ref, 'refs/tags/') }}
 
     steps:
       - uses: actions/checkout@v4

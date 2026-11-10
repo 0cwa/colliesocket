@@ -1,0 +1,33 @@
+{
+  "reconstructed_workspace": true,
+  "observed_at_utc": "2026-11-10T20:20:25.404541+00:00",
+  "command": "sh crates/colliesocket-push/tools/conformance.sh",
+  "exit_code": 0,
+  "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)",
+  "cargo": "cargo 1.90.0 (840b83a10 2025-07-30)",
+  "cargo_lock_sha256": "070faa4e82896da8929a4d9e229cae08cbe3ed6edbdf2de28135890654ce4aa8",
+  "dependencies": [
+    {
+      "crate": "ece-native",
+      "version": "0.5.0",
+      "source_commit": "6b0a3f10377af3c9401a7c1a60b1e34d41155c5d",
+      "crate_archive_sha256": "6911cc97c62febd8cbcb2cb49ed21c58ccd418a80c43f20df4973ee08484e65d",
+      "source_lib_sha256": "38a057da25992c4ab87e9e9c77899e57e2e763514cf3c993325485abb253fe55"
+    },
+    {
+      "crate": "web-push-native",
+      "version": "0.5.0",
+      "source_commit": "6b0a3f10377af3c9401a7c1a60b1e34d41155c5d",
+      "crate_archive_sha256": "7628c93e39aeee4c0bca50ae333052b4f174c653e8fca1d0a8e34f9bc4879c0c",
+      "source_lib_sha256": "b25c516f44f30dd6874b7172acbfb9d42a9e114e179e390ef449ff2cf8472269"
+    }
+  ],
+  "log": "evidence/conformance-rebuild.txt",
+  "not_run": [
+    "physical Android",
+    "Android lock behavior",
+    "real distributor",
+    "production enrollment",
+    "security audit"
+  ]
+}

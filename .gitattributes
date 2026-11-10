@@ -1,0 +1,5 @@
+# Padding and malformed-byte fixtures must retain their exact bytes.
+contracts/encrypted-push/v1/fixtures/*.bin binary
+contracts/encrypted-push/v1/fixtures/crypto/*.bin binary
+crates/colliesocket-push/fixtures/*.bin binary
+provenance/encrypted-push/*.bundle binary
