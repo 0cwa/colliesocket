@@ -14,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashSet, fmt, fs, path::Path, time::Duration};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const MAX_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_EVENT_BYTES: usize = 3072;
 pub const MAX_ACCOUNTS: usize = 4096;
@@ -26,6 +26,7 @@ pub const MAX_EVENT_LIFETIME: i64 = 300;
 pub const CLOCK_TOLERANCE: i64 = 60;
 pub const LEASE_SECONDS: i64 = 30;
 pub const MAX_ATTEMPTS: u32 = 4;
+pub const CONTROL_STATUS_RETRY_SECONDS: i64 = 30;
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -96,6 +97,12 @@ pub struct Enrollment {
     pub account_id: String,
     pub device_id: u32,
     pub password: String,
+    #[serde(
+        default,
+        deserialize_with = "present_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub control_key: Option<String>,
     pub subscription: Subscription,
 }
 
@@ -124,14 +131,16 @@ pub struct Event {
     pub expires_at: i64,
     #[serde(
         default,
-        deserialize_with = "present_code",
+        deserialize_with = "present_string",
         skip_serializing_if = "Option::is_none"
     )]
     pub code: Option<String>,
 }
 
-fn present_code<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<String>, D::Error> {
-    // An omitted field is permitted, but an explicit JSON null is not a code.
+fn present_string<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    // An omitted optional string is permitted, but explicit JSON null is not.
     String::deserialize(d).map(Some)
 }
 
@@ -143,6 +152,19 @@ macro_rules! redacted_debug {
     })+ };
 }
 redacted_debug!(Enrollment, Subscription, Event);
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ControlContext {
+    pub subscription: Subscription,
+    pub control_key: String,
+}
+redacted_debug!(ControlContext);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlDisposition {
+    Applied,
+    Unchanged,
+}
 
 fn canonical_uuid(value: &str, v4: bool) -> bool {
     let b = value.as_bytes();
@@ -179,11 +201,19 @@ fn key_bytes(value: &str, len: usize) -> Result<Vec<u8>> {
 }
 
 impl Subscription {
+    pub fn event_version(&self) -> u32 {
+        if self.supported_event_versions == [1, 2] {
+            2
+        } else {
+            1
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         if !self.encryption_required {
             return Err(StoreError::EncryptionRequired);
         }
-        if self.supported_event_versions != [1] {
+        if self.supported_event_versions != [1] && self.supported_event_versions != [1, 2] {
             return Err(StoreError::UnsupportedVersion);
         }
         if self.capabilities != ["wake", "test", "status"] {
@@ -240,8 +270,23 @@ impl Subscription {
 
 impl Enrollment {
     pub fn validate(&self) -> Result<()> {
-        if self.enrollment_version != 1 {
+        if !matches!(self.enrollment_version, 1 | 2) {
             return Err(StoreError::UnsupportedVersion);
+        }
+        match self.control_key.as_deref() {
+            Some(key) => {
+                if self.enrollment_version != 2 {
+                    return Err(StoreError::InvalidEnrollment);
+                }
+                key_bytes(key, 32)?;
+                if self.subscription.supported_event_versions != [1, 2] {
+                    return Err(StoreError::UnsupportedVersion);
+                }
+            }
+            None if self.subscription.supported_event_versions != [1] => {
+                return Err(StoreError::UnsupportedVersion);
+            }
+            None => (),
         }
         if !canonical_uuid(&self.request_id, true)
             || !canonical_uuid(&self.account_id, false)
@@ -258,7 +303,7 @@ impl Enrollment {
 impl Event {
     pub fn validate(&self, now: i64) -> Result<()> {
         let time_ok = |v: i64| v >= 0 && (v as u64) <= MAX_JSON_INTEGER;
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || !canonical_uuid(&self.event_id, true)
             || !valid_instance(&self.instance)
             || !valid_epoch(self.subscription_epoch)
@@ -271,9 +316,10 @@ impl Event {
         {
             return Err(StoreError::InvalidEvent);
         }
-        match (self.kind.as_str(), self.code.as_deref()) {
-            ("wake" | "test", None)
-            | ("status", Some("connection_conflict" | "connection_unavailable")) => (),
+        match (self.version, self.kind.as_str(), self.code.as_deref()) {
+            (_, "wake" | "test", None)
+            | (_, "status", Some("connection_conflict" | "connection_unavailable"))
+            | (2, "status", Some("subscription_updated")) => (),
             _ => return Err(StoreError::InvalidEvent),
         }
         if serde_json::to_vec(self)?.len() > MAX_EVENT_BYTES {
@@ -454,19 +500,33 @@ impl PushStore {
         if count >= MAX_REQUESTS_PER_ACCOUNT {
             return Err(StoreError::CapacityExceeded);
         }
-        let existing: Option<(String, String, u32, String)> = tx.query_row(
-            "SELECT subscription_json,state,connection_device_id,connection_password FROM encrypted_subscriptions WHERE account_id=?1",
-            [&enrollment.account_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        let existing: Option<(String, String, u32, String, Option<String>)> = tx.query_row(
+            "SELECT subscription_json,state,connection_device_id,connection_password,control_key FROM encrypted_subscriptions WHERE account_id=?1",
+            [&enrollment.account_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
         let disposition;
         let mut changed_credentials = false;
-        if let Some((json, state, device, password)) = existing {
+        if let Some((json, state, device, password, control_key)) = existing {
             let old: Subscription = serde_json::from_str(&json)?;
             changed_credentials = device != enrollment.device_id || password != enrollment.password;
-            if enrollment.subscription.subscription_epoch == old.subscription_epoch
+            // A control blob authenticates account/device/version/epoch, not
+            // the private password or instance, and the phone allocates control
+            // epochs above anything it has already built while a private import
+            // must be exactly the server epoch + 1. A pre-built higher-epoch
+            // frame under a reused key could therefore roll back a newer
+            // private import. Every state-changing keyed import needs a fresh
+            // key; only the idempotent import may repeat the current one.
+            let unchanged = enrollment.subscription.subscription_epoch == old.subscription_epoch
                 && old == enrollment.subscription
                 && !changed_credentials
-                && state == "active"
+                && control_key == enrollment.control_key
+                && state == "active";
+            if enrollment.control_key.is_some()
+                && control_key == enrollment.control_key
+                && !unchanged
             {
+                return Err(StoreError::InvalidEnrollment);
+            }
+            if unchanged {
                 disposition = EnrollmentDisposition::Unchanged;
             } else if old.subscription_epoch < MAX_JSON_INTEGER
                 && enrollment.subscription.subscription_epoch == old.subscription_epoch + 1
@@ -500,13 +560,13 @@ impl PushStore {
                     tx.execute("INSERT INTO connections(uuid,device_id,password,endpoint,forbidden,last_registration) VALUES(?1,?2,?3,?4,0,?5)",
                         params![enrollment.account_id,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now])?;
                 }
-                tx.execute("INSERT INTO encrypted_subscriptions(account_id,subscription_epoch,subscription_json,state,connection_device_id,connection_password,connection_endpoint,updated_at) VALUES(?1,?2,?3,'active',?4,?5,?6,?7)",
-                    params![enrollment.account_id,enrollment.subscription.subscription_epoch as i64,json,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now])?;
+                tx.execute("INSERT INTO encrypted_subscriptions(account_id,subscription_epoch,subscription_json,state,connection_device_id,connection_password,connection_endpoint,updated_at,control_key) VALUES(?1,?2,?3,'active',?4,?5,?6,?7,?8)",
+                    params![enrollment.account_id,enrollment.subscription.subscription_epoch as i64,json,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now,enrollment.control_key])?;
             } else {
                 // Update the shadow tuple first, so the legacy-overwrite guard
                 // permits exactly this connection update inside the transaction.
-                tx.execute("UPDATE encrypted_subscriptions SET subscription_epoch=?2,subscription_json=?3,state='active',connection_device_id=?4,connection_password=?5,connection_endpoint=?6,updated_at=?7 WHERE account_id=?1",
-                    params![enrollment.account_id,enrollment.subscription.subscription_epoch as i64,json,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now])?;
+                tx.execute("UPDATE encrypted_subscriptions SET subscription_epoch=?2,subscription_json=?3,state='active',connection_device_id=?4,connection_password=?5,connection_endpoint=?6,updated_at=?7,control_key=?8,last_control_digest=NULL,control_status_at=NULL WHERE account_id=?1",
+                    params![enrollment.account_id,enrollment.subscription.subscription_epoch as i64,json,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now,enrollment.control_key])?;
                 let changed = tx.execute("UPDATE connections SET device_id=?2,password=?3,endpoint=?4,last_registration=?5,forbidden=CASE WHEN ?6 THEN 0 ELSE forbidden END WHERE uuid=?1",
                     params![enrollment.account_id,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now,changed_credentials])?;
                 if changed != 1 {
@@ -540,6 +600,115 @@ impl PushStore {
         value
             .map(|s| serde_json::from_str(&s).map_err(StoreError::from))
             .transpose()
+    }
+
+    /// A key is available only to the current, non-forbidden socket tuple.
+    /// Endpoint changes made by control must be reflected in that tuple before
+    /// processing the next message; a replaced private import stays obsolete.
+    pub fn control_context_for_connection(
+        &self,
+        co: &crate::db::Connection,
+    ) -> Result<Option<ControlContext>> {
+        let row: Option<(String, String)> = self.db.query_row(
+            "SELECT s.subscription_json,s.control_key FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND s.control_key IS NOT NULL",
+            params![co.uuid,co.device_id,co.password,co.endpoint],
+            |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+        row.map(|(json, control_key)| {
+            let subscription: Subscription = serde_json::from_str(&json)?;
+            subscription.validate()?;
+            key_bytes(&control_key, 32)?;
+            if subscription.event_version() != 2 {
+                return Err(StoreError::StateUnavailable);
+            }
+            Ok(ControlContext {
+                subscription,
+                control_key,
+            })
+        })
+        .transpose()
+    }
+
+    /// Apply an already authenticated control frame after the caller has
+    /// authorized its endpoint. This transaction rechecks the exact private
+    /// credential/key snapshot, advances only the permitted fields, and queues
+    /// confirmation before the transport may acknowledge the Signal frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_endpoint_update(
+        &mut self,
+        co: &crate::db::Connection,
+        expected_key: &str,
+        new_subscription: &Subscription,
+        wire_digest: &[u8; 32],
+        confirmation: &Event,
+        now: i64,
+    ) -> Result<ControlDisposition> {
+        new_subscription.validate()?;
+        key_bytes(expected_key, 32)?;
+        confirmation.validate(now)?;
+        if new_subscription.event_version() != 2
+            || confirmation.version != 2
+            || confirmation.kind != "status"
+            || confirmation.code.as_deref() != Some("subscription_updated")
+            || confirmation.instance != new_subscription.instance
+            || confirmation.subscription_epoch != new_subscription.subscription_epoch
+        {
+            return Err(StoreError::InvalidEvent);
+        }
+        let hash: String = wire_digest.iter().map(|b| format!("{b:02x}")).collect();
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: Option<(String, String, Option<String>, Option<i64>, String)> = tx.query_row(
+            "SELECT s.subscription_json,s.control_key,s.last_control_digest,s.control_status_at,s.state FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND s.control_key IS NOT NULL",
+            params![co.uuid,co.device_id,co.password,co.endpoint],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+        let (json, control_key, previous_digest, last_status, state) =
+            current.ok_or(StoreError::SubscriptionMissing)?;
+        if control_key != expected_key {
+            return Err(StoreError::EpochConflict);
+        }
+        let old: Subscription = serde_json::from_str(&json)?;
+        if old.instance != new_subscription.instance
+            || old.encryption_required != new_subscription.encryption_required
+            || old.supported_event_versions != new_subscription.supported_event_versions
+            || old.capabilities != new_subscription.capabilities
+        {
+            return Err(StoreError::InvalidEnrollment);
+        }
+        if new_subscription.subscription_epoch <= old.subscription_epoch {
+            if new_subscription.subscription_epoch != old.subscription_epoch
+                || previous_digest.as_deref() != Some(hash.as_str())
+                || old != *new_subscription
+            {
+                return Err(StoreError::EpochConflict);
+            }
+            // Replay never changes the subscription or revives inactive state.
+            // A lost push receipt may only recover its bounded confirmation.
+            if state == "active" {
+                ensure_control_confirmation(&tx, &co.uuid, confirmation, last_status, now)?;
+            }
+            tx.commit()?;
+            return Ok(ControlDisposition::Unchanged);
+        }
+
+        let json = serde_json::to_string(new_subscription)?;
+        // The shadow tuple must change first to satisfy the legacy write guard.
+        tx.execute("UPDATE encrypted_subscriptions SET subscription_epoch=?2,subscription_json=?3,state='active',connection_endpoint=?4,updated_at=?5,last_control_digest=?6,control_status_at=NULL WHERE account_id=?1",
+            params![co.uuid,new_subscription.subscription_epoch as i64,json,new_subscription.endpoint,now,hash])?;
+        if tx.execute(
+            "UPDATE connections SET endpoint=?2 WHERE uuid=?1",
+            params![co.uuid, new_subscription.endpoint],
+        )? != 1
+        {
+            return Err(StoreError::StateUnavailable);
+        }
+        tx.execute(
+            "DELETE FROM encrypted_push_queue WHERE account_id=?1",
+            [&co.uuid],
+        )?;
+        ensure_control_confirmation(&tx, &co.uuid, confirmation, None, now)?;
+        tx.commit()?;
+        Ok(ControlDisposition::Applied)
     }
 
     /// Build an event from this exact snapshot, then pass it directly to
@@ -619,64 +788,12 @@ impl PushStore {
     /// survives provider acceptance and key rotation until the event expires.
     pub fn enqueue(&mut self, account_id: &str, event: &Event, now: i64) -> Result<bool> {
         event.validate(now)?;
-        let json = serde_json::to_string(event)?;
-        let hash = digest(&(account_id, event))?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        prune(&tx, now)?;
-        let seen: Option<String> = tx
-            .query_row(
-                "SELECT event_digest FROM encrypted_push_event_ids WHERE event_id=?1",
-                [&event.event_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(seen) = seen {
-            if seen != hash {
-                return Err(StoreError::InvalidEvent);
-            }
-            tx.commit()?;
-            return Ok(false);
-        }
-        let current: Option<(String, String)> = tx
-            .query_row(
-                "SELECT subscription_json,state FROM encrypted_subscriptions WHERE account_id=?1",
-                [account_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let (sub, state) = current.ok_or(StoreError::SubscriptionMissing)?;
-        let sub: Subscription = serde_json::from_str(&sub)?;
-        if sub.subscription_epoch != event.subscription_epoch || sub.instance != event.instance {
-            return Err(StoreError::EpochConflict);
-        }
-        if state != "active" {
-            return Err(StoreError::SubscriptionInactive);
-        }
-        let account_count: usize = tx.query_row(
-            "SELECT count(*) FROM encrypted_push_queue WHERE account_id=?1",
-            [account_id],
-            |r| row_count(r, 0),
-        )?;
-        let global_count: usize =
-            tx.query_row("SELECT count(*) FROM encrypted_push_queue", [], |r| {
-                row_count(r, 0)
-            })?;
-        let id_count: usize =
-            tx.query_row("SELECT count(*) FROM encrypted_push_event_ids", [], |r| {
-                row_count(r, 0)
-            })?;
-        if account_count >= MAX_QUEUE_PER_ACCOUNT
-            || global_count >= MAX_QUEUE_GLOBAL
-            || id_count >= MAX_EVENT_IDS
-        {
-            return Err(StoreError::QueueFull);
-        }
-        tx.execute("INSERT INTO encrypted_push_event_ids(event_id,account_id,event_digest,expires_at) VALUES(?1,?2,?3,?4)", params![event.event_id,account_id,hash,event.expires_at])?;
-        tx.execute("INSERT INTO encrypted_push_queue(event_id,account_id,subscription_epoch,event_json,expires_at,attempts,next_attempt_at) VALUES(?1,?2,?3,?4,?5,0,?6)", params![event.event_id,account_id,event.subscription_epoch as i64,json,event.expires_at,now])?;
+        let queued = enqueue_event(&tx, account_id, event, now)?;
         tx.commit()?;
-        Ok(true)
+        Ok(queued)
     }
 
     /// Persist an attempt before returning work. An abandoned claim remains
@@ -809,6 +926,92 @@ impl PushStore {
         tx.commit()?;
         Ok(removed)
     }
+}
+
+fn ensure_control_confirmation(
+    tx: &Transaction<'_>,
+    account_id: &str,
+    event: &Event,
+    last_status: Option<i64>,
+    now: i64,
+) -> Result<()> {
+    if last_status.is_some_and(|last| now < last.saturating_add(CONTROL_STATUS_RETRY_SECONDS)) {
+        return Ok(());
+    }
+    let pending: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM encrypted_push_queue WHERE account_id=?1 AND subscription_epoch=?2 AND expires_at>?3 AND (attempts<4 OR lease_until>?3) AND json_extract(event_json,'$.version')=2 AND json_extract(event_json,'$.kind')='status' AND json_extract(event_json,'$.code')='subscription_updated')",
+        params![account_id,event.subscription_epoch as i64,now], |r| r.get(0))?;
+    if !pending {
+        if !enqueue_event(tx, account_id, event, now)? {
+            return Err(StoreError::InvalidEvent);
+        }
+        tx.execute(
+            "UPDATE encrypted_subscriptions SET control_status_at=?2 WHERE account_id=?1",
+            params![account_id, now],
+        )?;
+    }
+    Ok(())
+}
+
+// All enrollment checks and outbox changes share the caller's transaction.
+fn enqueue_event(tx: &Transaction<'_>, account_id: &str, event: &Event, now: i64) -> Result<bool> {
+    event.validate(now)?;
+    let json = serde_json::to_string(event)?;
+    let hash = digest(&(account_id, event))?;
+    prune(tx, now)?;
+    let seen: Option<String> = tx
+        .query_row(
+            "SELECT event_digest FROM encrypted_push_event_ids WHERE event_id=?1",
+            [&event.event_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(seen) = seen {
+        if seen != hash {
+            return Err(StoreError::InvalidEvent);
+        }
+        return Ok(false);
+    }
+    let current: Option<(String, String)> = tx
+        .query_row(
+            "SELECT subscription_json,state FROM encrypted_subscriptions WHERE account_id=?1",
+            [account_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (sub, state) = current.ok_or(StoreError::SubscriptionMissing)?;
+    let sub: Subscription = serde_json::from_str(&sub)?;
+    if sub.subscription_epoch != event.subscription_epoch || sub.instance != event.instance {
+        return Err(StoreError::EpochConflict);
+    }
+    if event.version != sub.event_version() {
+        return Err(StoreError::UnsupportedVersion);
+    }
+    if state != "active" {
+        return Err(StoreError::SubscriptionInactive);
+    }
+    let account_count: usize = tx.query_row(
+        "SELECT count(*) FROM encrypted_push_queue WHERE account_id=?1",
+        [account_id],
+        |r| row_count(r, 0),
+    )?;
+    let global_count: usize =
+        tx.query_row("SELECT count(*) FROM encrypted_push_queue", [], |r| {
+            row_count(r, 0)
+        })?;
+    let id_count: usize =
+        tx.query_row("SELECT count(*) FROM encrypted_push_event_ids", [], |r| {
+            row_count(r, 0)
+        })?;
+    if account_count >= MAX_QUEUE_PER_ACCOUNT
+        || global_count >= MAX_QUEUE_GLOBAL
+        || id_count >= MAX_EVENT_IDS
+    {
+        return Err(StoreError::QueueFull);
+    }
+    tx.execute("INSERT INTO encrypted_push_event_ids(event_id,account_id,event_digest,expires_at) VALUES(?1,?2,?3,?4)", params![event.event_id,account_id,hash,event.expires_at])?;
+    tx.execute("INSERT INTO encrypted_push_queue(event_id,account_id,subscription_epoch,event_json,expires_at,attempts,next_attempt_at) VALUES(?1,?2,?3,?4,?5,0,?6)", params![event.event_id,account_id,event.subscription_epoch as i64,json,event.expires_at,now])?;
+    Ok(true)
 }
 
 fn row_count(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<usize> {
@@ -967,6 +1170,8 @@ fn verify_schema(db: &Connection) -> Result<()> {
             return Err(StoreError::StateUnavailable);
         }
     }
+    // A schema marker alone must not make a partially migrated store usable.
+    db.prepare("SELECT control_key,last_control_digest,control_status_at FROM encrypted_subscriptions LIMIT 0")?;
     Ok(())
 }
 
@@ -983,7 +1188,8 @@ fn migrate(db: &mut Connection) -> Result<()> {
     }
     tx.execute_batch("CREATE TABLE IF NOT EXISTS connections(uuid TEXT UNIQUE ON CONFLICT REPLACE,device_id INTEGER,password TEXT,endpoint TEXT,forbidden BOOLEAN NOT NULL CHECK(forbidden IN(0,1)),last_registration INTEGER);")?;
     verify_connection_schema(&tx)?;
-    tx.execute_batch(r#"
+    if version < 2 {
+        tx.execute_batch(r#"
 CREATE TABLE encrypted_subscriptions(
  account_id TEXT PRIMARY KEY REFERENCES connections(uuid),
  subscription_epoch INTEGER NOT NULL CHECK(subscription_epoch BETWEEN 1 AND 9007199254740991),
@@ -1025,6 +1231,13 @@ CREATE TRIGGER encrypted_connection_delete_guard BEFORE DELETE ON connections
  BEGIN SELECT RAISE(ABORT,'encrypted_enrollment_required'); END;
 PRAGMA user_version=2;
 "#)?;
+    }
+    tx.execute_batch(
+        "ALTER TABLE encrypted_subscriptions ADD COLUMN control_key TEXT;
+         ALTER TABLE encrypted_subscriptions ADD COLUMN last_control_digest TEXT;
+         ALTER TABLE encrypted_subscriptions ADD COLUMN control_status_at INTEGER;
+         PRAGMA user_version=3;",
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -1087,6 +1300,7 @@ mod tests {
             account_id: ACCOUNT.into(),
             device_id: 2,
             password: "synthetic-password-only".into(),
+            control_key: None,
             subscription: Subscription {
                 endpoint: "https://push.example.test/synthetic-token".into(),
                 p256dh: public.clone(),
@@ -1101,7 +1315,7 @@ mod tests {
     }
     fn event(enrollment: &Enrollment, n: u64) -> Event {
         Event {
-            version: 1,
+            version: enrollment.subscription.event_version(),
             event_id: id(n),
             instance: enrollment.subscription.instance.clone(),
             subscription_epoch: enrollment.subscription.subscription_epoch,
@@ -1116,6 +1330,33 @@ mod tests {
         new.request_id = id(n);
         new.subscription.subscription_epoch += 1;
         new
+    }
+    fn keyed_enrollment() -> Enrollment {
+        let mut e = enrollment();
+        e.enrollment_version = 2;
+        e.control_key = Some(URL_SAFE_NO_PAD.encode([23u8; 32]));
+        e.subscription.supported_event_versions = vec![1, 2];
+        e
+    }
+    fn connection(e: &Enrollment) -> crate::db::Connection {
+        crate::db::Connection::new(
+            e.account_id.clone(),
+            e.device_id,
+            e.password.clone(),
+            e.subscription.endpoint.clone(),
+        )
+    }
+    fn confirmation(sub: &Subscription, n: u64, now: i64) -> Event {
+        Event {
+            version: 2,
+            event_id: id(n),
+            instance: sub.instance.clone(),
+            subscription_epoch: sub.subscription_epoch,
+            kind: "status".into(),
+            issued_at: now,
+            expires_at: now + 300,
+            code: Some("subscription_updated".into()),
+        }
     }
     fn legacy_database(dir: &TestDir, version: u32) {
         fs::OpenOptions::new()
@@ -1151,7 +1392,7 @@ mod tests {
                     .db
                     .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                     .unwrap(),
-                2
+                SCHEMA_VERSION
             );
             let row: (String, u32, String, String, bool, i64) = store
                 .db
@@ -1185,10 +1426,532 @@ mod tests {
     }
 
     #[test]
+    fn migration_from_two_preserves_v1_receipts_and_queued_pushes() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let e = enrollment();
+        let original = store.enroll(&e, NOW).unwrap();
+        store.enqueue(ACCOUNT, &event(&e, 11), NOW).unwrap();
+        // Reconstruct the previous schema without touching its existing rows.
+        store
+            .db
+            .execute_batch(
+                "ALTER TABLE encrypted_subscriptions DROP COLUMN control_key;
+             ALTER TABLE encrypted_subscriptions DROP COLUMN last_control_digest;
+             ALTER TABLE encrypted_subscriptions DROP COLUMN control_status_at;
+             PRAGMA user_version=2;",
+            )
+            .unwrap();
+        drop(store);
+        let mut store = dir.store();
+        let receipt = store.receipt_for(&e).unwrap().unwrap();
+        assert!(receipt.replayed);
+        assert_eq!(receipt.disposition, original.disposition);
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(e.subscription.clone())
+        );
+        assert!(store
+            .control_context_for_connection(&connection(&e))
+            .unwrap()
+            .is_none());
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        assert_eq!(store.claim_due(NOW).unwrap().unwrap().event.version, 1);
+        assert!(!serde_json::to_string(&e).unwrap().contains("control_key"));
+    }
+
+    #[test]
+    fn enrollment_v2_requires_exact_optional_key_and_negotiation() {
+        let good = keyed_enrollment();
+        good.validate().unwrap();
+        assert_eq!(good.subscription.event_version(), 2);
+        let mut no_key = enrollment();
+        no_key.enrollment_version = 2;
+        no_key.validate().unwrap();
+        assert_eq!(no_key.subscription.event_version(), 1);
+        let mut bad = good.clone();
+        bad.enrollment_version = 1;
+        assert_eq!(bad.validate(), Err(StoreError::InvalidEnrollment));
+        for key in [
+            String::new(),
+            URL_SAFE_NO_PAD.encode([23u8; 31]),
+            format!("{}=", good.control_key.as_ref().unwrap()),
+        ] {
+            let mut bad = good.clone();
+            bad.control_key = Some(key);
+            assert_eq!(bad.validate(), Err(StoreError::InvalidKeys));
+        }
+        let mut bad = good.clone();
+        bad.control_key = None;
+        assert_eq!(bad.validate(), Err(StoreError::UnsupportedVersion));
+        let mut bad = good.clone();
+        bad.subscription.supported_event_versions = vec![1];
+        assert_eq!(bad.validate(), Err(StoreError::UnsupportedVersion));
+        let json = serde_json::to_string(&no_key).unwrap();
+        assert!(serde_json::from_str::<Enrollment>(&json.replacen(
+            '{',
+            "{\"control_key\":null,",
+            1
+        ))
+        .is_err());
+        let json = serde_json::to_string(&good).unwrap();
+        assert!(serde_json::from_str::<Enrollment>(&json.replacen(
+            '{',
+            "{\"control_key\":\"duplicate\",",
+            1
+        ))
+        .is_err());
+        assert!(!format!("{good:?}").contains(good.control_key.as_ref().unwrap()));
+        let mut status = confirmation(&good.subscription, 12, NOW);
+        status.validate(NOW).unwrap();
+        status.version = 1;
+        assert_eq!(status.validate(NOW), Err(StoreError::InvalidEvent));
+    }
+
+    #[test]
+    fn control_rotation_revives_stale_atomically_and_replay_only_recovers_status() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let e = keyed_enrollment();
+        store.enroll(&e, NOW).unwrap();
+        let original = connection(&e);
+        let key = e.control_key.as_ref().unwrap();
+        store.enqueue(ACCOUNT, &event(&e, 11), NOW).unwrap();
+        let obsolete_claim = store.claim_due(NOW).unwrap().unwrap();
+        store
+            .complete(&obsolete_claim, DeliveryOutcome::Gone, NOW)
+            .unwrap();
+        assert_eq!(
+            store.account_state(ACCOUNT).unwrap(),
+            Some(AccountState::Stale)
+        );
+
+        let mut updated = e.subscription.clone();
+        updated.endpoint.push_str("-new");
+        updated.auth = URL_SAFE_NO_PAD.encode([45u8; 16]);
+        updated.subscription_epoch = 4; // Lost phone updates may skip epochs.
+        let first = confirmation(&updated, 12, NOW + 1);
+        assert_eq!(
+            store
+                .apply_endpoint_update(&original, key, &updated, &[3; 32], &first, NOW + 1)
+                .unwrap(),
+            ControlDisposition::Applied
+        );
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(updated.clone())
+        );
+        assert_eq!(
+            store.account_state(ACCOUNT).unwrap(),
+            Some(AccountState::Active)
+        );
+        assert!(store
+            .control_context_for_connection(&original)
+            .unwrap()
+            .is_none());
+        let mut current = connection(&e);
+        current.endpoint = updated.endpoint.clone();
+        let context = store
+            .control_context_for_connection(&current)
+            .unwrap()
+            .unwrap();
+        assert_eq!(context.control_key, *key);
+        assert_eq!(context.subscription, updated);
+        let row: (u32, String, bool, i64) = store.db.query_row(
+            "SELECT device_id,password,forbidden,last_registration FROM connections WHERE uuid=?1",
+            [ACCOUNT], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+        assert_eq!(row, (e.device_id, e.password.clone(), false, NOW));
+
+        // Replays coalesce with pending status without touching subscription time.
+        let retry = confirmation(&updated, 13, NOW + 40);
+        assert_eq!(
+            store
+                .apply_endpoint_update(&current, key, &updated, &[3; 32], &retry, NOW + 40)
+                .unwrap(),
+            ControlDisposition::Unchanged
+        );
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        assert_eq!(
+            store
+                .db
+                .query_row(
+                    "SELECT updated_at FROM encrypted_subscriptions WHERE account_id=?1",
+                    [ACCOUNT],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            NOW + 1
+        );
+        let status = store.claim_due(NOW + 40).unwrap().unwrap();
+        assert_eq!(status.event, first);
+        assert_eq!(status.subscription, updated);
+        store
+            .complete(&status, DeliveryOutcome::Accepted, NOW + 40)
+            .unwrap();
+        // Provider acceptance isn't phone receipt: an identical replay can
+        // recover a lost confirmation, bounded to one every thirty seconds.
+        store
+            .apply_endpoint_update(&current, key, &updated, &[3; 32], &retry, NOW + 40)
+            .unwrap();
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        let status = store.claim_due(NOW + 40).unwrap().unwrap();
+        assert_eq!(status.event, retry);
+        store
+            .complete(&status, DeliveryOutcome::Accepted, NOW + 41)
+            .unwrap();
+        let throttled = confirmation(&updated, 14, NOW + 42);
+        store
+            .apply_endpoint_update(&current, key, &updated, &[3; 32], &throttled, NOW + 42)
+            .unwrap();
+        assert_eq!(store.pending_count(None).unwrap(), 0);
+        let later = confirmation(&updated, 15, NOW + 71);
+        store
+            .apply_endpoint_update(&current, key, &updated, &[3; 32], &later, NOW + 71)
+            .unwrap();
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        // A late provider callback from before rotation cannot stale the new epoch.
+        store
+            .complete(&obsolete_claim, DeliveryOutcome::Gone, NOW + 72)
+            .unwrap();
+        assert_eq!(
+            store.account_state(ACCOUNT).unwrap(),
+            Some(AccountState::Active)
+        );
+        let status = store.claim_due(NOW + 72).unwrap().unwrap();
+        store
+            .complete(&status, DeliveryOutcome::Gone, NOW + 72)
+            .unwrap();
+        let inactive_retry = confirmation(&updated, 16, NOW + 110);
+        assert_eq!(
+            store
+                .apply_endpoint_update(
+                    &current,
+                    key,
+                    &updated,
+                    &[3; 32],
+                    &inactive_retry,
+                    NOW + 110
+                )
+                .unwrap(),
+            ControlDisposition::Unchanged
+        );
+        assert_eq!(
+            store.account_state(ACCOUNT).unwrap(),
+            Some(AccountState::Stale)
+        );
+        assert_eq!(store.pending_count(None).unwrap(), 0);
+        drop(store);
+        let store = dir.store();
+        assert_eq!(store.get_subscription(ACCOUNT).unwrap(), Some(updated));
+        assert_eq!(
+            store.account_state(ACCOUNT).unwrap(),
+            Some(AccountState::Stale)
+        );
+    }
+
+    #[test]
+    fn control_rejects_changed_replays_private_fields_and_obsolete_credentials() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let e = keyed_enrollment();
+        store.enroll(&e, NOW).unwrap();
+        let co = connection(&e);
+        let key = e.control_key.as_ref().unwrap();
+        let mut next = e.subscription.clone();
+        next.subscription_epoch = 2;
+        let status = confirmation(&next, 20, NOW);
+        assert_eq!(
+            store.apply_endpoint_update(
+                &co,
+                &URL_SAFE_NO_PAD.encode([0u8; 32]),
+                &next,
+                &[4; 32],
+                &status,
+                NOW
+            ),
+            Err(StoreError::EpochConflict)
+        );
+        let mut private = next.clone();
+        private.instance.push_str("-private-change");
+        let invalid_status = confirmation(&private, 21, NOW);
+        assert_eq!(
+            store.apply_endpoint_update(&co, key, &private, &[4; 32], &invalid_status, NOW),
+            Err(StoreError::InvalidEnrollment)
+        );
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(e.subscription.clone())
+        );
+        assert_eq!(store.pending_count(None).unwrap(), 0);
+        store
+            .apply_endpoint_update(&co, key, &next, &[4; 32], &status, NOW)
+            .unwrap();
+        assert_eq!(
+            store.apply_endpoint_update(&co, key, &next, &[5; 32], &status, NOW),
+            Err(StoreError::EpochConflict)
+        );
+        let old_status = confirmation(&e.subscription, 22, NOW);
+        assert_eq!(
+            store.apply_endpoint_update(&co, key, &e.subscription, &[4; 32], &old_status, NOW),
+            Err(StoreError::EpochConflict)
+        );
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+
+        // A private key rotation invalidates a previously captured control key,
+        // and even identical credentials cannot restore an old control receipt.
+        let mut imported = e.clone();
+        imported.request_id = id(2);
+        imported.subscription.subscription_epoch = 3;
+        imported.control_key = Some(URL_SAFE_NO_PAD.encode([24u8; 32]));
+        store.enroll(&imported, NOW + 1).unwrap();
+        let mut fourth = imported.subscription.clone();
+        fourth.subscription_epoch = 4;
+        let status = confirmation(&fourth, 23, NOW + 1);
+        assert_eq!(
+            store.apply_endpoint_update(&co, key, &fourth, &[6; 32], &status, NOW + 1),
+            Err(StoreError::EpochConflict)
+        );
+        let imported_status = confirmation(&imported.subscription, 24, NOW + 1);
+        assert_eq!(
+            store.apply_endpoint_update(
+                &co,
+                imported.control_key.as_ref().unwrap(),
+                &imported.subscription,
+                &[4; 32],
+                &imported_status,
+                NOW + 1
+            ),
+            Err(StoreError::EpochConflict)
+        );
+        let mut wrong = connection(&imported);
+        wrong.password.push('x');
+        assert!(store
+            .control_context_for_connection(&wrong)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store.apply_endpoint_update(
+                &wrong,
+                imported.control_key.as_ref().unwrap(),
+                &fourth,
+                &[6; 32],
+                &status,
+                NOW + 1
+            ),
+            Err(StoreError::SubscriptionMissing)
+        );
+        store
+            .db
+            .execute(
+                "UPDATE connections SET forbidden=1 WHERE uuid=?1",
+                [ACCOUNT],
+            )
+            .unwrap();
+        assert!(store.control_context_for_connection(&co).unwrap().is_none());
+        assert_eq!(
+            store.apply_endpoint_update(
+                &co,
+                imported.control_key.as_ref().unwrap(),
+                &fourth,
+                &[6; 32],
+                &status,
+                NOW + 1
+            ),
+            Err(StoreError::SubscriptionMissing)
+        );
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(imported.subscription)
+        );
+        assert_eq!(store.pending_count(None).unwrap(), 0);
+    }
+
+    #[test]
+    fn control_persistence_failure_rolls_back_endpoint_epoch_and_confirmation() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let e = keyed_enrollment();
+        store.enroll(&e, NOW).unwrap();
+        store.enqueue(ACCOUNT, &event(&e, 30), NOW).unwrap();
+        let co = connection(&e);
+        let mut next = e.subscription.clone();
+        next.endpoint.push_str("-new");
+        next.subscription_epoch = 2;
+        let status = confirmation(&next, 31, NOW);
+        store.db.execute_batch("CREATE TRIGGER fail_control_status BEFORE INSERT ON encrypted_push_queue BEGIN SELECT RAISE(ABORT,'injected_interruption'); END;").unwrap();
+        assert_eq!(
+            store.apply_endpoint_update(
+                &co,
+                e.control_key.as_ref().unwrap(),
+                &next,
+                &[7; 32],
+                &status,
+                NOW
+            ),
+            Err(StoreError::StateUnavailable)
+        );
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(e.subscription.clone())
+        );
+        assert_eq!(
+            store
+                .control_context_for_connection(&co)
+                .unwrap()
+                .unwrap()
+                .subscription,
+            e.subscription
+        );
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        let replay: (Option<String>, Option<i64>) = store.db.query_row("SELECT last_control_digest,control_status_at FROM encrypted_subscriptions WHERE account_id=?1", [ACCOUNT], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(replay, (None, None));
+        store
+            .db
+            .execute_batch("DROP TRIGGER fail_control_status;")
+            .unwrap();
+        drop(store);
+        let mut store = dir.store();
+        assert_eq!(
+            store
+                .apply_endpoint_update(
+                    &co,
+                    e.control_key.as_ref().unwrap(),
+                    &next,
+                    &[7; 32],
+                    &status,
+                    NOW
+                )
+                .unwrap(),
+            ControlDisposition::Applied
+        );
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        assert_eq!(store.claim_due(NOW).unwrap().unwrap().event, status);
+    }
+
+    #[test]
+    fn private_lifecycle_replacement_requires_fresh_control_key() {
+        for change in ["password", "device", "instance"] {
+            let dir = TestDir::new();
+            let mut store = dir.store();
+            let e = keyed_enrollment();
+            store.enroll(&e, NOW).unwrap();
+            let mut replacement = rotate(&e, 2);
+            match change {
+                "password" => replacement.password.push('x'),
+                "device" => replacement.device_id += 1,
+                _ => replacement.subscription.instance.push_str("-new"),
+            }
+            assert_eq!(
+                store.enroll(&replacement, NOW + 1),
+                Err(StoreError::InvalidEnrollment)
+            );
+            assert_eq!(
+                store.get_subscription(ACCOUNT).unwrap(),
+                Some(e.subscription.clone())
+            );
+            assert!(store.receipt_for(&replacement).unwrap().is_none());
+            replacement.control_key = Some(URL_SAFE_NO_PAD.encode([99u8; 32]));
+            store.enroll(&replacement, NOW + 1).unwrap();
+            let mut prebuilt = replacement.subscription.clone();
+            prebuilt.subscription_epoch = 100;
+            prebuilt.endpoint.push_str("-old-lifecycle");
+            let status = confirmation(&prebuilt, 50, NOW + 2);
+            assert_eq!(
+                store.apply_endpoint_update(
+                    &connection(&replacement),
+                    e.control_key.as_ref().unwrap(),
+                    &prebuilt,
+                    &[8; 32],
+                    &status,
+                    NOW + 2,
+                ),
+                Err(StoreError::EpochConflict)
+            );
+            assert_eq!(
+                store.get_subscription(ACCOUNT).unwrap(),
+                Some(replacement.subscription)
+            );
+            assert_eq!(store.pending_count(None).unwrap(), 0);
+        }
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let e = keyed_enrollment();
+        store.enroll(&e, NOW).unwrap();
+        let mut endpoint_rotation = rotate(&e, 2);
+        endpoint_rotation.subscription.endpoint.push_str("-new");
+        // Even an endpoint-only private change needs a fresh key.
+        assert_eq!(
+            store.enroll(&endpoint_rotation, NOW + 1),
+            Err(StoreError::InvalidEnrollment)
+        );
+        // The idempotent import may repeat the current key.
+        let mut repeat = e.clone();
+        repeat.request_id = id(77);
+        assert_eq!(
+            store.enroll(&repeat, NOW + 1).unwrap().disposition,
+            EnrollmentDisposition::Unchanged
+        );
+        endpoint_rotation.control_key = Some(URL_SAFE_NO_PAD.encode([98u8; 32]));
+        store.enroll(&endpoint_rotation, NOW + 1).unwrap();
+        assert_eq!(
+            store
+                .control_context_for_connection(&connection(&endpoint_rotation))
+                .unwrap()
+                .unwrap()
+                .control_key,
+            endpoint_rotation.control_key.unwrap()
+        );
+    }
+
+    #[test]
+    fn same_key_private_import_cannot_be_rolled_back_by_prebuilt_control_frames() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let a = keyed_enrollment();
+        store.enroll(&a, NOW).unwrap();
+        let key = a.control_key.clone().unwrap();
+        // The phone built frames for epochs 2 (endpoint B) and 3 (B2) while the
+        // server was offline. Meanwhile the user privately imports endpoint C at
+        // epoch 2 with the same key.
+        let mut c = rotate(&a, 2);
+        c.subscription.endpoint.push_str("-c");
+        assert_eq!(
+            store.enroll(&c, NOW + 1),
+            Err(StoreError::InvalidEnrollment)
+        );
+        assert!(store.receipt_for(&c).unwrap().is_none());
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(a.subscription.clone())
+        );
+        // With a fresh key the import succeeds and the old frames are dead.
+        c.control_key = Some(URL_SAFE_NO_PAD.encode([42u8; 32]));
+        store.enroll(&c, NOW + 1).unwrap();
+        let co = connection(&c);
+        for epoch in [2u64, 3] {
+            let mut frame = c.subscription.clone();
+            frame.subscription_epoch = epoch;
+            frame.endpoint = format!("https://push.example.test/frame-{epoch}");
+            let status = confirmation(&frame, 60 + epoch, NOW + 2);
+            assert!(store
+                .apply_endpoint_update(&co, &key, &frame, &[epoch as u8; 32], &status, NOW + 2)
+                .is_err());
+        }
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(c.subscription)
+        );
+        assert_eq!(store.pending_count(None).unwrap(), 0);
+    }
+
+    #[test]
     fn future_and_partial_schemas_are_rejected_without_version_downgrade() {
         let dir = TestDir::new();
         let store = dir.store();
-        store.db.pragma_update(None, "user_version", 3).unwrap();
+        store
+            .db
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
         drop(store);
         assert!(matches!(
             PushStore::open(dir.path()),
@@ -1198,7 +1961,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            3
+            SCHEMA_VERSION + 1
         );
         drop(db);
         let partial = TestDir::new();
@@ -1959,7 +2722,7 @@ mod tests {
         store.enroll(&e, NOW).unwrap();
         store.db.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<4095) INSERT INTO connections SELECT printf('fixture-account-%d',x),2,?1,?2,0,?3 FROM n",params![e.password,e.subscription.endpoint,NOW]).unwrap();
         let sub = serde_json::to_string(&e.subscription).unwrap();
-        store.db.execute("INSERT INTO encrypted_subscriptions SELECT uuid,1,?1,'active',device_id,password,endpoint,?2 FROM connections WHERE uuid<>?3",params![sub,NOW,ACCOUNT]).unwrap();
+        store.db.execute("INSERT INTO encrypted_subscriptions(account_id,subscription_epoch,subscription_json,state,connection_device_id,connection_password,connection_endpoint,updated_at) SELECT uuid,1,?1,'active',device_id,password,endpoint,?2 FROM connections WHERE uuid<>?3",params![sub,NOW,ACCOUNT]).unwrap();
         let mut next = e.clone();
         next.account_id = id(987);
         next.request_id = id(988);

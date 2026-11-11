@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "event_id": "33333333-3333-4333-8333-333333333333",
+  "instance": "fixture-instance",
+  "subscription_epoch": 2,
+  "kind": "status",
+  "issued_at": 1800000000,
+  "expires_at": 1800000300,
+  "code": "subscription_updated"
+}

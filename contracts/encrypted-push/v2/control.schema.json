@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cwa/colliesocket/contracts/encrypted-push/v2/control.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "endpoint",
+    "p256dh",
+    "auth"
+  ],
+  "properties": {
+    "endpoint": {
+      "type": "string",
+      "pattern": "^(?:[!-~]{1,2048})(?![\\s\\S])",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "p256dh": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9_-]{87})(?![\\s\\S])",
+      "minLength": 87,
+      "maxLength": 87
+    },
+    "auth": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9_-]{22})(?![\\s\\S])",
+      "minLength": 22,
+      "maxLength": 22
+    }
+  }
+}

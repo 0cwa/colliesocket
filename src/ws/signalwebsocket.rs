@@ -21,7 +21,13 @@ use super::{
     tls,
     websocket_connection::{self, WebSocketConnection},
 };
-use crate::{config, db::Connection, push, utils::post_allowed};
+use crate::{
+    config, control,
+    db::Connection,
+    push,
+    push_store::{PushStore, StoreError},
+    utils::post_allowed,
+};
 
 const PUSH_TIMEOUT: Duration = Duration::from_secs(1);
 const DELIVERY_CHECK_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -71,6 +77,9 @@ impl std::error::Error for Error {}
 // No Debug: this object holds a linked-device credential and endpoint token.
 pub struct SignalWebSocket {
     original: Connection,
+    // A control update keeps Signal credentials but changes the endpoint used
+    // by this socket's exact-tuple guard before the next message is processed.
+    current_endpoint: Mutex<String>,
     encrypted_mode: bool,
     creds: String,
     push_endpoint: url::Url,
@@ -128,6 +137,7 @@ impl SignalWebSocket {
                 password.to_owned(),
                 raw_endpoint.to_owned(),
             ),
+            current_endpoint: Mutex::new(raw_endpoint.to_owned()),
             encrypted_mode,
             creds: format!("{uuid}.{device_id}:{password}"),
             push_endpoint,
@@ -202,15 +212,101 @@ impl SignalWebSocket {
         if !self.is_signal_service_envelope(&request) {
             return Ok(None);
         }
-        self.send_response(self.create_websocket_response(&request))
-            .await?;
-        Ok(match request.body {
+        let envelope = match request.body.as_deref() {
             None => Some(Envelope {
                 urgent: Some(false),
                 ..Envelope::default()
             }),
-            Some(body) => Envelope::decode(&body[..]).ok(),
-        })
+            Some(body) => Envelope::decode(body).ok(),
+        };
+        let is_control = envelope
+            .as_ref()
+            .and_then(|envelope| envelope.content.as_deref())
+            .is_some_and(control::is_candidate);
+        if is_control {
+            // Source, type and urgent are untrusted. Recognize the marker even
+            // for malformed/forged frames, so they never become urgent wakes.
+            self.apply_control(
+                envelope
+                    .as_ref()
+                    .and_then(|envelope| envelope.content.as_deref())
+                    .expect("recognized_control_content"),
+            )
+            .await?;
+        }
+        // An accepted control transaction (including its confirmation) must be
+        // durable before this ACK can enter the websocket writer's queue.
+        self.send_response(self.create_websocket_response(&request))
+            .await?;
+        Ok(if is_control { None } else { envelope })
+    }
+
+    pub(crate) fn current_connection(&self) -> Result<Connection> {
+        Ok(Connection::new(
+            self.original.uuid.clone(),
+            self.original.device_id,
+            self.original.password.clone(),
+            self.current_endpoint
+                .lock()
+                .map_err(|_| eyre!("state_unavailable"))?
+                .clone(),
+        ))
+    }
+
+    async fn apply_control(&self, bytes: &[u8]) -> Result<()> {
+        if !self.encrypted_mode || !config::is_uuid_valid(&self.original.uuid) {
+            return Ok(());
+        }
+        let co = self.current_connection()?;
+        let context = PushStore::open(config::get_db())
+            .and_then(|store| store.control_context_for_connection(&co))
+            .map_err(|_| eyre!("control_state_unavailable"))?;
+        let Some(context) = context else {
+            return Ok(());
+        };
+        let Some(update) = control::decrypt(bytes, &co.uuid, co.device_id, &context.control_key)
+        else {
+            return Ok(());
+        };
+        let mut subscription = context.subscription;
+        subscription.endpoint = update.subscription.endpoint;
+        subscription.p256dh = update.subscription.p256dh;
+        subscription.auth = update.subscription.auth;
+        subscription.subscription_epoch = update.subscription_epoch;
+        if subscription.validate().is_err()
+            || !config::is_endpoint_valid(&subscription.endpoint).await
+        {
+            return Ok(());
+        }
+        let confirmation = push::new_event(&subscription, "status", Some("subscription_updated"))
+            .map_err(|_| eyre!("control_state_unavailable"))?;
+        let result = PushStore::open(config::get_db()).and_then(|mut store| {
+            store.apply_endpoint_update(
+                &co,
+                &context.control_key,
+                &subscription,
+                &update.digest,
+                &confirmation,
+                confirmation.issued_at,
+            )
+        });
+        match result {
+            Ok(_) => {
+                *self
+                    .current_endpoint
+                    .lock()
+                    .map_err(|_| eyre!("state_unavailable"))? = subscription.endpoint;
+                Ok(())
+            }
+            // A transient storage/capacity failure must not acknowledge and
+            // lose an otherwise valid update. The whole transaction rolled back.
+            Err(
+                StoreError::StateUnavailable | StoreError::QueueFull | StoreError::CapacityExceeded,
+            ) => Err(eyre!("control_state_unavailable")),
+            // Replays, obsolete sockets and rejected policy/schema changes
+            // cannot mutate state or wake the phone; discard them with an ACK.
+            Err(_) => Ok(()),
+        }
     }
 
     fn is_signal_service_envelope(&self, request: &WebSocketRequestMessage) -> bool {
@@ -243,7 +339,7 @@ impl SignalWebSocket {
         let attempted = if self.encrypted_mode {
             // The guard atomically verifies the original connection tuple before
             // enqueueing. False means this socket is obsolete; never downgrade.
-            push::enqueue_for_connection(&self.original, "wake", None)
+            push::enqueue_for_connection(&self.current_connection()?, "wake", None)
                 .map_err(|_| eyre!("push_enqueue_failed"))?
         } else if config::legacy_wake_enabled()
             && push::legacy_connection_is_current(&self.original)
@@ -275,8 +371,12 @@ impl SignalWebSocket {
             }
             *instant = Instant::now();
         }
-        let _ = push::enqueue_for_connection(&self.original, "status", Some("connection_conflict"))
-            .map_err(|_| eyre!("push_enqueue_failed"))?;
+        let _ = push::enqueue_for_connection(
+            &self.current_connection()?,
+            "status",
+            Some("connection_conflict"),
+        )
+        .map_err(|_| eyre!("push_enqueue_failed"))?;
         Ok(())
     }
 
@@ -289,6 +389,10 @@ impl SignalWebSocket {
             > PUSH_TIMEOUT)
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "control_tests.rs"]
+mod control_tests;
 
 #[cfg(test)]
 mod tests {

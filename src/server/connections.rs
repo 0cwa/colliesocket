@@ -34,6 +34,9 @@ pub async fn run() {
                     let encrypted_mode=enrolled.contains(&co.uuid);
                     if co.forbidden||!config::is_uuid_valid(&co.uuid)||!(encrypted_mode||config::legacy_wake_enabled()){continue}
                     if wanted.len()>=4096{log::warn!("connection_capacity_exceeded");break}
+                    // The endpoint is part of the socket fingerprint, so every endpoint update reconnects
+                    // the Signal socket on purpose; a control frame redelivered after a cancel between
+                    // commit and acknowledgement is a harmless replay.
                     let bytes=serde_json::to_vec(&serde_json::json!([co.device_id,co.password,co.endpoint,encrypted_mode])).expect("state_unavailable");
                     let digest=openssl::sha::sha256(&bytes);
                     wanted.insert(co.uuid.clone(),digest);
@@ -77,7 +80,7 @@ async fn connection_loop(co: Connection, encrypted_mode: bool) {
             if result.err().is_some_and(|e|matches!(e.downcast_ref::<SignalWebSocketError>(),Some(SignalWebSocketError::RegistrationRemoved))){
                 // Only Signal authentication failure can mark these exact local
                 // credentials forbidden. No late old-worker status or unlink.
-                if DB.forbid_if_current(&co).unwrap_or(false){METRICS.forbiddens.inc();log::info!("signal_credentials_rejected");}
+                if socket.current_connection().ok().is_some_and(|current|DB.forbid_if_current(&current).unwrap_or(false)){METRICS.forbiddens.inc();log::info!("signal_credentials_rejected");}
             }
         },
         _=metrics=>log::warn!("signal_metrics_channel_closed"),
