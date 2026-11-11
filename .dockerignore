@@ -1,0 +1,23 @@
+# Send only reviewed build inputs. State, imports, credentials and Git metadata
+# cannot enter the image context through a broad COPY.
+**
+!Containerfile.colliesocket
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!LICENSE.txt
+!src/
+!src/**
+!crates/
+!crates/colliesocket-push/
+!crates/colliesocket-push/Cargo.toml
+!crates/colliesocket-push/src/
+!crates/colliesocket-push/src/**
+!crates/colliesocket-push/examples/
+!crates/colliesocket-push/examples/**
+!crates/colliesocket-push/tests/
+!crates/colliesocket-push/tests/**
+!crates/colliesocket-push/LICENSE-web-push-native-MIT
+!tools/
+!tools/image/
+!tools/image/collect-runtime.sh
