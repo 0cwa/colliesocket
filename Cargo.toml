@@ -8,7 +8,12 @@ description = "MollySocket allows getting signal notifications via UnifiedPush."
 readme = "README.md"
 repository = "https://github.com/mollyim/mollysocket"
 keywords = ["unifiedpush", "molly", "signal"]
-# build = "src/build_proto.rs"
+build = "src/build_test_signal.rs"
+
+[features]
+# Local integration tests only. The build script also requires a debug profile;
+# release builds have no overrides even with all features and debug assertions.
+test-signal = []
 
 [profile.release]
 strip = true  # Automatically strip symbols from the binary.

@@ -3,6 +3,8 @@ use native_tls::{Certificate, TlsConnector};
 pub fn build_tls_connector() -> Result<TlsConnector, native_tls::Error> {
     let root_ca = include_bytes!("certs/signal-messenger.pem");
     let root_ca = Certificate::from_pem(root_ca)?;
+    #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+    let root_ca = crate::config::get_test_signal_root().unwrap_or(root_ca);
     let mut builder = TlsConnector::builder();
     builder.disable_built_in_roots(true);
     builder.add_root_certificate(root_ca);
