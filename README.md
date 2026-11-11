@@ -25,6 +25,29 @@ for the pinned local build and CI interface. Server candidate manifests under
 NOT RUN gates. Android, physical-device, deployment and shipping security
 acceptance are separate from the local synthetic server checks.
 
+## Repository boundaries
+
+ChatGPT moved the desktop/Android application planning to
+[Collie Pack](https://github.com/0cwa/collie-pack/tree/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd),
+the project previously called collie-fetch. Its
+[current product record](https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/handoff/product-direction-v3.json)
+owns the Tauri GUI, provider/distributor integration, native notifications,
+local/LAN/tunnel modes, application packaging, deployment and combined tests.
+Those application components remain implementation work.
+
+CollieSocket owns the Signal-facing sender, Rust service/library API,
+encryption, enrollment, outbox, canonical contracts, server tests and server
+build recipe. The existing library boundary preserves the `mollysocket` CLI;
+`run_cli()` is CLI-only. A restartable API for embedding remains server work.
+The [library evidence](evidence/library-boundary-v1/results.json) retains its
+original source and validation scope.
+
+The [repository split receipt](handoff/repository-split-v1.json) records the
+verified transfer and current routing. Frozen contract and candidate records
+keep their original bytes, including historical project names. The
+[current server PR draft](handoff/pr-draft-v3.md) targets this repository's
+`main` from `work/encrypted-push-v1`; the Collie Pack PR is separate.
+
 ## Upstream MollySocket documentation
 
 MollySocket allows getting signal notifications via [UnifiedPush](https://unifiedpush.org/). It works like a linked device, which doesn't have an encryption key, connected to the Signal server. Everytime it receives an encrypted event, it notifies your mobile via UnifiedPush.
