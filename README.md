@@ -25,23 +25,28 @@ for the pinned local build and CI interface. Server candidate manifests under
 NOT RUN gates. Android, physical-device, deployment and shipping security
 acceptance are separate from the local synthetic server checks.
 
-## Native GUI product direction
+## Repository boundaries
 
-ChatGPT recorded the user's choice of **Tauri 2** for the desktop/Android GUI in
-the [Tauri host decision](docs/architecture/tauri-host-v1.md) and
-[product-direction addendum](handoff/product-direction-v2.json). The app will
-use Rust service logic with local, LAN and optional tunnel access. Containers
-remain an optional headless format. The initial Android OS floor is API 24;
-actual device, ABI and WebView acceptance still needs verification.
+ChatGPT moved the desktop/Android application planning to
+[Collie Pack](https://github.com/0cwa/collie-pack/tree/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd),
+the project previously called collie-fetch. Its
+[current product record](https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/handoff/product-direction-v3.json)
+owns the Tauri GUI, provider/distributor integration, native notifications,
+local/LAN/tunnel modes, application packaging, deployment and combined tests.
+Those application components remain implementation work.
 
-The existing service modules now have a library boundary, while the
-`mollysocket` CLI keeps its behavior. Its `run_cli()` entry is CLI-only; a
-restartable host API must precede Tauri service controls. The current candidate
-is the CollieSocket sender service. The provider/distributor, native GUI and
-Android service remain implementation work, with separate acceptance gates.
-The [broader host design](docs/architecture/native-gui-host-v1.md) records the
-roles and modes. Frozen v1 contracts and existing candidate evidence retain
-their original scope.
+CollieSocket owns the Signal-facing sender, Rust service/library API,
+encryption, enrollment, outbox, canonical contracts, server tests and server
+build recipe. The existing library boundary preserves the `mollysocket` CLI;
+`run_cli()` is CLI-only. A restartable API for embedding remains server work.
+The [library evidence](evidence/library-boundary-v1/results.json) retains its
+original source and validation scope.
+
+The [repository split receipt](handoff/repository-split-v1.json) records the
+verified transfer and current routing. Frozen contract and candidate records
+keep their original bytes, including historical project names. The
+[current server PR draft](handoff/pr-draft-v3.md) targets this repository's
+`main` from `work/encrypted-push-v1`; the Collie Pack PR is separate.
 
 ## Upstream MollySocket documentation
 
