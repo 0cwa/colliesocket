@@ -1,0 +1,323 @@
+{
+  "manifest_version": 2,
+  "state": "REVIEW_READY_LOCAL_SERVER_PASS",
+  "scope": "Published server source and local synthetic verification. Image execution, Android, deployment and shipping security acceptance remain NOT RUN.",
+  "recorded_at_utc": "2026-11-10T21:09:31.455406+00:00",
+  "canonical_repository": "0cwa/colliesocket",
+  "work_branch": "work/encrypted-push-v1",
+  "source_commit": "172ab2f378c9bd5a6d2fa9df94c3506414320339",
+  "source_tree": "a2d617707893cee9d3ef1e6a56e7902afac7a14a",
+  "upstream_base": "f1e10c97d4644df4d326b9d7dedb160b297d41ca",
+  "contract_commit": "0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f",
+  "handoff_commit": "a58a46e278efdb89f9e6fd46d6b9556189a636eb",
+  "contract_version": "encrypted-push/v1",
+  "runtime_contract_path": "contracts/encrypted-push/v1/runtime.md",
+  "fixture_manifest_sha256": "226bff31ca34b23e411929812ab86105ee970d0aab84848b1b53b18edff21568",
+  "launch_manifest": "handoff/parallel-start-v2.json",
+  "input_repository_and_dependency_pins": "handoff/parallel-start-v2.json and contracts/encrypted-push/v1/source-audit.md",
+  "source_evidence_binding": {
+    "result": "PASS",
+    "method": "Compared SHA-256 of each tested input to git show SOURCE_COMMIT:PATH from the fetched canonical source; frozen C0 directories and H0 manifest also compared byte-for-byte.",
+    "verified_unique_paths": 144,
+    "native_inputs": "evidence/server-candidate-v2/source-inputs.json",
+    "native_inputs_sha256": "7c3352ed0fe96906c7355496b1d09c57161f7b53973375bfb74deebc990e8676",
+    "image_inputs": "images/local-validation.json",
+    "image_inputs_sha256": "1e53f4f6142d7f1f51839016e6b0eab1f60b94ae877dbb8ac67a0947f8e414e8"
+  },
+  "native_build": {
+    "result": "PASS",
+    "command": "cargo build --release --locked",
+    "target": "x86_64-unknown-linux-gnu",
+    "rust": "1.90.0",
+    "cargo_lock": {
+      "path": "Cargo.lock",
+      "sha256": "9156abf0076451b56c5098acb0d1bf6f6e49800a3e6694f9bd33c0c7482c3243"
+    },
+    "tested_release_binary": {
+      "path": "target/release/mollysocket",
+      "sha256": "bdad2840cfd1d1b942b7560c66b2f96b688ba938061b1afe02de287b7d74dad7",
+      "bytes": 9083304,
+      "target": "x86_64-unknown-linux-gnu"
+    },
+    "tool_versions": "evidence/server-candidate-v2/tool-versions.json",
+    "binary_reproducibility": "NOT RUN: hash identifies the executed native build; toolchain/native dependency differences may change bytes."
+  },
+  "image_build": {
+    "result": "NOT RUN",
+    "reason": "Docker and podman executables are unavailable in this workspace; no GitHub Actions execution was observed.",
+    "recipe": "Containerfile.colliesocket",
+    "recipe_sha256": "30394120e22bc85538805fbb85bc1039f4c6ad3ae6064eca3ae0333dd3938b4e",
+    "recipe_inputs": [
+      {
+        "path": "Containerfile.colliesocket",
+        "sha256": "30394120e22bc85538805fbb85bc1039f4c6ad3ae6064eca3ae0333dd3938b4e"
+      },
+      {
+        "path": ".dockerignore",
+        "sha256": "34285127810b0bba4e5cab55c7e13a53e748e390e1600f181bc1cabafc87b05f"
+      },
+      {
+        "path": "images/base-pins.json",
+        "sha256": "8cbaa07ce3a13c9f6e3c1decd63e23d3cb9f809f7c21a122242b3687a83d491f"
+      },
+      {
+        "path": "tools/image/build.sh",
+        "sha256": "eea6d415be2a8a41b1482ade95dd9d76ae5dbfb0e41a90b9b9cffba4e8e178fa"
+      },
+      {
+        "path": "tools/image/check-pins.py",
+        "sha256": "40abeb8b5815079435db983e8fda613eb43f12e6fedd48e4af245270b1fe9945"
+      },
+      {
+        "path": "tools/image/collect-runtime.sh",
+        "sha256": "1449e09e7837438af10258fe5ddc1757e3602857b14d862ed518bd9c3ecdcc68"
+      },
+      {
+        "path": "tools/image/metadata.py",
+        "sha256": "a9052f20ed2ac353970c1aa00e947449a6604e03dd02d326357987b61ab8850d"
+      },
+      {
+        "path": "tools/image/smoke.py",
+        "sha256": "a9a0159927735e1cda4bb5dff0fec335a2ba94bbf3becdb2c54983ae5313e434"
+      }
+    ],
+    "base_and_build_tool_pins": "images/base-pins.json",
+    "base_indexes": [
+      {
+        "role": "builder",
+        "reference": "docker.io/library/rust@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f"
+      },
+      {
+        "role": "runtime",
+        "reference": "docker.io/library/debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc"
+      },
+      {
+        "role": "frontend",
+        "reference": "docker.io/docker/dockerfile@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e"
+      },
+      {
+        "role": "buildkit",
+        "reference": "docker.io/moby/buildkit@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe"
+      }
+    ],
+    "architectures": [
+      {
+        "platform": "linux/amd64",
+        "build": "NOT RUN",
+        "runtime_smoke": "NOT RUN"
+      },
+      {
+        "platform": "linux/arm64",
+        "build": "NOT RUN",
+        "runtime_smoke": "NOT RUN"
+      }
+    ],
+    "image_manifest_digest": null,
+    "image_configuration_digest": null,
+    "archive_sha256": null,
+    "registry_publication": "NOT RUN; not requested",
+    "repeated_digest_reproducibility": "NOT RUN",
+    "offline_and_registry_checks": "images/local-validation.json",
+    "build_interface": "bash tools/image/build.sh PLATFORM IMAGE_TAG OUTPUT_DIRECTORY",
+    "documentation": "docs/IMAGE.md"
+  },
+  "test_matrix": [
+    {
+      "gate": "Frozen schema/semantic cases",
+      "result": "PASS",
+      "cases": 76,
+      "command": "python3 contracts/encrypted-push/v1/tools/conformance.py"
+    },
+    {
+      "gate": "Reference receiver replay/clock/lock cases",
+      "result": "PASS",
+      "cases": 14,
+      "limit": "Reference model only; not Android"
+    },
+    {
+      "gate": "Frozen contract file hashes",
+      "result": "PASS",
+      "files": 80
+    },
+    {
+      "gate": "Standalone real Rust sender and RFC vector",
+      "result": "PASS",
+      "tests": 5,
+      "evidence": "crates/colliesocket-push/evidence/rebuild.json"
+    },
+    {
+      "gate": "Independent Python/OpenSSL fixture decryption",
+      "result": "PASS",
+      "negative_checks": 35,
+      "command": "python3 crates/colliesocket-push/tools/check_fixtures.py contracts/encrypted-push/v1/fixtures/crypto"
+    },
+    {
+      "gate": "Final server formatting and unit tests",
+      "result": "PASS",
+      "passed": 60,
+      "failed": 0,
+      "ignored": 2,
+      "measured": 0,
+      "filtered_out": 0,
+      "evidence": "evidence/server-candidate-v2/results.json"
+    },
+    {
+      "gate": "Final native release build",
+      "result": "PASS",
+      "target": "x86_64-unknown-linux-gnu"
+    },
+    {
+      "gate": "Actual release CLI/worker with independent decryption",
+      "result": "PASS",
+      "scenario_groups": 14,
+      "evidence": "evidence/server-candidate-v2/cli-release.json"
+    },
+    {
+      "gate": "Image scripts, workflow source and immutable registry pins",
+      "result": "PASS",
+      "evidence": "images/local-validation.json",
+      "limit": "No image build or runtime execution"
+    },
+    {
+      "gate": "Docker build/runtime, amd64 and arm64, repeated digest",
+      "result": "NOT RUN"
+    },
+    {
+      "gate": "GitHub Actions execution",
+      "result": "NOT RUN",
+      "observation": "Work-branch runs endpoint returned total_count 0; no specific repository setting inferred"
+    },
+    {
+      "gate": "External Signal staging/public TLS probes",
+      "result": "NOT RUN",
+      "reason": "Two explicitly ignored tests"
+    },
+    {
+      "gate": "Real Signal authentication, distributor and VAPID provider acceptance",
+      "result": "NOT RUN"
+    },
+    {
+      "gate": "Actual Android connector/Keystore/lock/replay/rotation integration",
+      "result": "NOT RUN",
+      "owner": "Orchestrator 2"
+    },
+    {
+      "gate": "Deployment and combined system tests",
+      "result": "NOT RUN",
+      "owner": "Orchestrator 3"
+    },
+    {
+      "gate": "Shipping security acceptance",
+      "result": "NOT RUN"
+    }
+  ],
+  "executed_server_commands": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "status": "PASS",
+      "exit_code": 0,
+      "elapsed_seconds": 0.116,
+      "log": "evidence/server-candidate-v2/01-format-check.log"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked"
+      ],
+      "status": "PASS",
+      "exit_code": 0,
+      "elapsed_seconds": 0.426,
+      "log": "evidence/server-candidate-v2/02-cargo-test.log"
+    },
+    {
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked"
+      ],
+      "status": "PASS",
+      "exit_code": 0,
+      "elapsed_seconds": 52.583,
+      "log": "evidence/server-candidate-v2/03-release-build.log"
+    },
+    {
+      "command": [
+        "python3",
+        "tests/server_cli.py",
+        "--binary",
+        "target/release/mollysocket",
+        "--output",
+        "evidence/server-candidate-v2/cli-release.json"
+      ],
+      "status": "PASS",
+      "exit_code": 0,
+      "elapsed_seconds": 1.716,
+      "log": "evidence/server-candidate-v2/04-release-cli.log"
+    }
+  ],
+  "known_gaps": [
+    "Real Android decryption is Orchestrator 2's first gate; do not synthesize decrypted=true or bypass the connector. Physical lock-transition, durable replay and unlock recovery remain unverified.",
+    "No image engine was available locally and no CI run was observed. The recipe and offline checks are published, but neither architecture has a built-image digest or runtime PASS.",
+    "No production Signal identities or linked-device credentials were used. Live Signal/provider/VAPID behavior and deployment/load/contended timing remain unverified.",
+    "collie-fetch was inaccessible to this session (authenticated lookup 404). Orchestrator 3 must establish its own repository/deployment pin.",
+    "Local synthetic gates and read-only source review are not an independent shipping security audit."
+  ],
+  "security_and_compatibility_decisions": [
+    "Initial authority is protected local service-account import; no HTTP enrollment or credentials/key establishment through an untrusted TLS edge.",
+    "All v1 wake, test and status payloads use actual 4096-byte aes128gcm binary bodies; HTTP/VAPID are distinct and no Topic header or rich content is added.",
+    "Durable exact-epoch rotation, receipt idempotency, bounded outbox/leases/retries, stale-provider recovery and legacy downgrade guards are enforced.",
+    "Destination address validation, explicit private-origin authorization, disabled implicit proxies and disabled redirects remain in place.",
+    "Logging accepts only the mollysocket namespace; more-specific external RUST_LOG directives cannot re-enable raw transport logs.",
+    "Provider acceptance is not device delivery. Provider errors cannot silently unlink Signal devices.",
+    "Legacy wake-only is disabled by default, explicitly time-bounded when enabled and cannot receive test/status/richer data.",
+    "Public readiness exposure, production release/registry publication and cross-owner implementation changes were not performed."
+  ],
+  "migration": {
+    "schema": 2,
+    "when": "Opening state with the candidate can migrate it automatically, including server startup and CLI commands. Complete the protected backup before first candidate use against an existing database.",
+    "from": [
+      0,
+      1
+    ],
+    "command": "mollysocket -c /run/secrets/colliesocket/config.toml migrate",
+    "backup": "Stop all writers and save a complete service-owned private backup; do not copy only a live WAL main file.",
+    "rollback": "Stop all writers and restore the prior binary with its matching pre-migration backup. No destructive down migration. The old binary must not open the upgraded live DB.",
+    "post_restore": "Keep sends disabled until fresh receiver keys/auth and a fresh instance are privately enrolled according to the restored registration lifecycle. Never resume encrypted subscriptions in plaintext.",
+    "guide": "docs/encrypted-push-server-v1.md"
+  },
+  "review": {
+    "diff_url": "https://github.com/0cwa/colliesocket/compare/f1e10c97d4644df4d326b9d7dedb160b297d41ca...172ab2f378c9bd5a6d2fa9df94c3506414320339",
+    "pr_draft": "handoff/pr-draft-v2.md",
+    "pr_message_posted": false,
+    "main_updated": false,
+    "merged": false,
+    "release_published": false,
+    "authored_source_provenance": "provenance/encrypted-push/server-candidate-source-v2.json",
+    "attribution": "Authored bundles preserve 0cwa <0@none.org> and upstream ancestry. API transport metadata remains actual GitHub-provided metadata. No fabricated signatures or signoffs."
+  },
+  "reproduction_commands": [
+    "git clone --branch work/encrypted-push-v1 https://github.com/0cwa/colliesocket.git",
+    "cd colliesocket",
+    "git checkout --detach 172ab2f378c9bd5a6d2fa9df94c3506414320339",
+    "python3 -m pip install -r contracts/encrypted-push/v1/tools/requirements.txt -r crates/colliesocket-push/tools/requirements.txt",
+    "python3 contracts/encrypted-push/v1/tools/conformance.py",
+    "sh crates/colliesocket-push/tools/conformance.sh",
+    "cargo fmt --all -- --check",
+    "cargo test --locked",
+    "cargo build --release --locked",
+    "python3 tests/server_cli.py --binary target/release/mollysocket",
+    "sha256sum -c evidence/server-candidate-v2/SHA256SUMS",
+    "python3 tools/image/check-pins.py",
+    "bash tools/image/build.sh linux/amd64 colliesocket:test-amd64 /path/outside/checkout/candidate-amd64"
+  ],
+  "change_control": "This manifest records a new source candidate and does not change frozen C0/H0 or force any consumer pin. Future changed accepted behavior requires a new contract version and migration notes. Candidate manifest own commit is reported externally, never embedded as its own hash.",
+  "historical_results_inherited": false
+}

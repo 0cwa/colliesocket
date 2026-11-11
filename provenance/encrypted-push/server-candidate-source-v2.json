@@ -1,0 +1,18 @@
+{
+  "provenance_version": 1,
+  "label": "server-candidate-source-v2",
+  "authored_commit": "d55744bad94419d202999c6861a38b99797b2137",
+  "authored_tree": "f615bf3fce88f8de77f0ea587b3f91c11eb6af8a",
+  "parent": "6ae1167452336e408c7acc684d712eddb368c883",
+  "author": "0cwa <0@none.org>",
+  "committer": "ChatGPT <codex@openai.com>",
+  "bundle": "provenance/encrypted-push/server-candidate-source-v2.bundle",
+  "bundle_sha256": "a748441eb79d6bb9246279191b7c341f7c3d69efd9f4b274f8a4201e4b55c540",
+  "bundle_prerequisite": "6ae1167452336e408c7acc684d712eddb368c883",
+  "publication": "Canonical GitHub API transport commits carry this exact source plus authored provenance. Their actual author/committer metadata is GitHub-provided and is not relabeled as the patch author. The canonical commit is reported externally/in a subsequent handoff; no self hash is embedded.",
+  "signatures_or_signoffs_added": false,
+  "verification_commands": [
+    "git bundle verify provenance/encrypted-push/server-candidate-source-v2.bundle",
+    "git fetch provenance/encrypted-push/server-candidate-source-v2.bundle refs/colliesocket/authored/server-candidate-source-v2"
+  ]
+}

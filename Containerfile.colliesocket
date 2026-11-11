@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1.7.1@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# Verified public manifest bodies and platform pins: images/base-pins.json.
+FROM docker.io/library/rust:1.90.0-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f AS builder
+
+ARG SOURCE_COMMIT
+ARG SOURCE_DATE_EPOCH
+WORKDIR /build
+ENV CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="--remap-path-prefix=/build=/usr/src/colliesocket" \
+    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
+
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY src/ ./src/
+COPY crates/colliesocket-push/Cargo.toml ./crates/colliesocket-push/Cargo.toml
+COPY crates/colliesocket-push/src/ ./crates/colliesocket-push/src/
+COPY crates/colliesocket-push/examples/ ./crates/colliesocket-push/examples/
+COPY crates/colliesocket-push/tests/ ./crates/colliesocket-push/tests/
+COPY tools/image/collect-runtime.sh /usr/local/bin/collect-runtime
+
+# The optional secret supplies a combined trusted CA bundle for a managed proxy.
+# It exists only during this step and is never copied into the runtime image.
+RUN --mount=type=secret,id=build_ca \
+    set -eu; \
+    test "${#SOURCE_COMMIT}" -eq 40; \
+    case "$SOURCE_COMMIT" in *[!0-9a-f]*) exit 1 ;; esac; \
+    case "$SOURCE_DATE_EPOCH" in ''|*[!0-9]*) exit 1 ;; esac; \
+    if [ -f /run/secrets/build_ca ]; then export CARGO_HTTP_CAINFO=/run/secrets/build_ca; fi; \
+    cargo +1.90.0 build --release --locked --bin mollysocket; \
+    sh /usr/local/bin/collect-runtime /build/target/release/mollysocket /runtime
+
+FROM docker.io/library/debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime
+ARG SOURCE_COMMIT
+ARG SOURCE_DATE_EPOCH
+LABEL org.opencontainers.image.title="CollieSocket" \
+      org.opencontainers.image.description="Encrypted UnifiedPush server derived from MollySocket" \
+      org.opencontainers.image.source="https://github.com/0cwa/colliesocket" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later" \
+      org.opencontainers.image.revision=${SOURCE_COMMIT} \
+      org.colliesocket.source-date-epoch=${SOURCE_DATE_EPOCH}
+
+# Includes reviewed non-glibc linked libraries and the CA bundle from the pinned
+# builder. Keep the runtime's complete libc/loader/NSS family. Neither stage
+# performs a floating apt install or full-upgrade.
+COPY --from=builder /runtime/ /
+COPY LICENSE.txt /usr/share/licenses/colliesocket/LICENSE.txt
+COPY crates/colliesocket-push/LICENSE-web-push-native-MIT /usr/share/licenses/colliesocket/LICENSE-web-push-native-MIT
+RUN set -eu; \
+    printf '%s\n' /usr/local/lib/colliesocket > /etc/ld.so.conf.d/colliesocket.conf; \
+    ldconfig; \
+    groupadd --gid 10001 colliesocket; \
+    useradd --uid 10001 --gid 10001 --home-dir /var/lib/colliesocket --no-create-home --shell /usr/sbin/nologin colliesocket; \
+    install -d -m 0700 -o 10001 -g 10001 /var/lib/colliesocket /run/secrets/colliesocket; \
+    ln -s mollysocket /usr/local/bin/colliesocket; \
+    /usr/local/bin/mollysocket --version
+
+ENV MOLLY_DB=/var/lib/colliesocket/mollysocket.db \
+    MOLLY_HOST=127.0.0.1 \
+    MOLLY_PORT=8020 \
+    MOLLY_WEBSERVER=false \
+    MOLLY_READY_PORT=8021 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+WORKDIR /var/lib/colliesocket
+USER 10001:10001
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/mollysocket", "ready"]
+ENTRYPOINT ["/usr/local/bin/mollysocket"]
+CMD ["server"]
