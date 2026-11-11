@@ -1,0 +1,28 @@
+{
+  "auth": "BTBZMqHH6r4Tts7J_aSIgg",
+  "files": [
+    {
+      "deterministic": true,
+      "path": "rfc8291.bin",
+      "sha256": "f976e174457c5111a0b05234e648bc012cb1e2b37949afce4d7b1e84752953c7"
+    },
+    {
+      "deterministic": true,
+      "path": "wake-v1.bin",
+      "sha256": "a11eea15599df53ab22059568e87331977a8712461ba4b69c582fe5a5022464d"
+    },
+    {
+      "deterministic": false,
+      "path": "sender-random.bin",
+      "sha256": "2df5656edfd6745aeb3a1deeab97e4c8ffcd622965edad644513d9c09f2b5e13"
+    }
+  ],
+  "p256dh": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+  "receiver_private": "q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94",
+  "record_size": 4096,
+  "salt": "DGv6ra1nlYgDCS1FRnbzlw",
+  "sender_private": "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw",
+  "source": "https://www.rfc-editor.org/rfc/rfc8291#section-5",
+  "synthetic": true,
+  "warning": "Public RFC test keys only; never use for a real subscription"
+}

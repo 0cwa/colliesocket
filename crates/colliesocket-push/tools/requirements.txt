@@ -1,0 +1,2 @@
+# Independent verifier only, not a production CollieSocket dependency.
+cryptography==50.0.0

@@ -1,0 +1,133 @@
+{
+  "manifest_version": 2,
+  "state": "READY",
+  "contract_commit": "0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f",
+  "contract_tree": "4c34724ec5a297af8d3aad44e1042093b22c5aa9",
+  "contract_version": "encrypted-push/v1",
+  "contract_path": "contracts/encrypted-push/v1",
+  "runtime_contract_path": "contracts/encrypted-push/v1/runtime.md",
+  "fixture_manifest_path": "contracts/encrypted-push/v1/fixtures/manifest.json",
+  "fixture_manifest_sha256": "226bff31ca34b23e411929812ab86105ee970d0aab84848b1b53b18edff21568",
+  "work_branch": "work/encrypted-push-v1",
+  "canonical_repositories": {
+    "server_and_contract": "0cwa/colliesocket",
+    "android": "0cwa/collieim-android",
+    "engineering": "0cwa/collie-release-engineering",
+    "deployment_and_system_tests": "0cwa/collie-fetch"
+  },
+  "ownership": {
+    "orchestrator_1": ["server implementation", "migrations", "server CLI", "server image", "server CI", "canonical contracts", "canonical fixtures"],
+    "orchestrator_2": ["Android implementation", "Android engineering patches"],
+    "orchestrator_3": ["deployment", "system tests", "combined-test reporting"]
+  },
+  "input_repositories": [
+    {"repository": "mollyim/mollysocket", "commit": "f1e10c97d4644df4d326b9d7dedb160b297d41ca", "role": "preserved upstream base"},
+    {"repository": "0cwa/collieim-android", "commit": "3614d9880ecc1e3a183cec669e09e3ac0226078a", "role": "current connector, receiver and lock source audit"},
+    {"repository": "0cwa/collie-release-engineering", "commit": "f6db071230624445ab870f69a65d362e32a5eefb", "role": "current patch ownership and attribution rules"},
+    {"repository": "0cwa/collie-fetch", "commit": null, "status": "authenticated repository lookup returned 404; Orchestrator 3 must establish its own accessible input pin"}
+  ],
+  "dependencies": [
+    {
+      "name": "UnifiedPush/android-connector",
+      "version": "3.0.10",
+      "commit": "948299041d5c86e69882c148e6b5f8c12e31387d",
+      "tracked_aar_sha256": "8c72adba1bfb230bc823b19badbafe21d18a5db3c5f4e6da5b5305b4ec815717",
+      "tracked_module_sha256": "d23909376a7b6abd7c680b3862dcef71bcc2e773bd5152b40ed5bc5f24127c7b",
+      "declared_tink_version": "1.17.0",
+      "connector_ui_version": "1.1.0-rc3",
+      "evidence_limit": "source and tracked verification metadata inspected; AAR download/rebuild and resolved Gradle graph NOT RUN"
+    },
+    {
+      "name": "web-push-native",
+      "version": "0.5.0",
+      "commit": "6b0a3f10377af3c9401a7c1a60b1e34d41155c5d",
+      "crate_archive_sha256": "7628c93e39aeee4c0bca50ae333052b4f174c653e8fca1d0a8e34f9bc4879c0c",
+      "default_features": false
+    },
+    {
+      "name": "ece-native",
+      "version": "0.5.0",
+      "commit": "6b0a3f10377af3c9401a7c1a60b1e34d41155c5d",
+      "crate_archive_sha256": "6911cc97c62febd8cbcb2cb49ed21c58ccd418a80c43f20df4973ee08484e65d",
+      "role": "published vector and deterministic test helper"
+    }
+  ],
+  "sender_cargo_lock_sha256": "070faa4e82896da8929a4d9e229cae08cbe3ed6edbdf2de28135890654ce4aa8",
+  "source_audit": "contracts/encrypted-push/v1/source-audit.md",
+  "publication": {
+    "contract_branch_published": true,
+    "fresh_remote_fetch_verified": true,
+    "remote_tree_matches_reviewed_local_tree": true,
+    "main_unchanged": true,
+    "authored_source_provenance": "provenance/encrypted-push/contract-v1-reconstructed.json",
+    "authored_source_bundle": "provenance/encrypted-push/contract-v1-reconstructed.bundle",
+    "authored_source_author": "0cwa <0@none.org>",
+    "publication_identity_policy": "GitHub API transport commits use GitHub-provided authenticated actor metadata; they are not relabeled as the authored source identity. The exact authored commit and upstream parent are preserved in the committed bundle. No signatures or signoffs were added.",
+    "handoff_commit": "reported externally in the launch receipt; intentionally not embedded as a self hash"
+  },
+  "executed_tests": [
+    {
+      "command": "python3 contracts/encrypted-push/v1/tools/conformance.py",
+      "result": "PASS",
+      "schema_and_semantic_cases": 76,
+      "reference_receiver_cases": 14,
+      "immutable_file_hashes": 80,
+      "limits": "reference lock/replay model only; not Android execution or durable server acceptance"
+    },
+    {
+      "command": "sh crates/colliesocket-push/tools/conformance.sh",
+      "result": "PASS",
+      "rust_tests": 5,
+      "independent_negative_checks": 35,
+      "evidence": "crates/colliesocket-push/evidence/rebuild.json",
+      "log": "crates/colliesocket-push/evidence/conformance-rebuild.txt"
+    },
+    {
+      "command": "python3 crates/colliesocket-push/tools/check_fixtures.py contracts/encrypted-push/v1/fixtures/crypto",
+      "result": "PASS",
+      "independent_negative_checks": 35,
+      "positive_checks": ["RFC 8291 published vector and intermediates", "deterministic Rust ciphertext byte match", "random production sender output decrypted independently", "JSON whitespace padding", "fixture hashes", "valid RFC padding"],
+      "independent_implementation": "Python cryptography 50.0.0 with OpenSSL 4.0.1; separate from RustCrypto sender",
+      "limits": "not Android, device, distributor, deployment or shipping security acceptance"
+    },
+    {
+      "command": "git fetch origin work/encrypted-push-v1; verify C0 and its tree against the reviewed local tree",
+      "result": "PASS",
+      "limits": "C0 is remotely fetchable; full server implementation is a subsequent candidate"
+    }
+  ],
+  "not_run_tests": [
+    "Actual Android connector/JVM decryption, Android build and resolved dependency graph",
+    "Physical Android device, Keystore, lock transition, replay restart, clock rollback and unlock recovery integration",
+    "Full server, durable migration, CLI, worker, image and CI acceptance at C0; subsequent server candidate owns those results",
+    "Real distributor and VAPID provider acceptance",
+    "Production Signal credentials, identities or enrollment",
+    "Deployment and combined system tests",
+    "Shipping security review"
+  ],
+  "known_blockers": [
+    {"scope": "Android acceptance", "blocks_parallel_start": false, "detail": "Orchestrator 2 must first decrypt the actual Rust fixtures through the pinned connector, reject decrypted=false, and implement the lock/epoch/replay gates. Manually constructing a decrypted message is not interoperability evidence."},
+    {"scope": "Deployment source access", "blocks_parallel_start": false, "detail": "collie-fetch was inaccessible to this session; Orchestrator 3 must establish its own source pin and validate the runtime contract against its environment."},
+    {"scope": "Server candidate", "blocks_parallel_start": false, "detail": "C0 fixes the runtime interface; full server/image verification follows in a separately pinned candidate. READY is not a shipping or production deployment approval."}
+  ],
+  "reproduction_commands": [
+    "git clone --branch work/encrypted-push-v1 https://github.com/0cwa/colliesocket.git",
+    "cd colliesocket",
+    "git checkout --detach 0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f",
+    "sha256sum contracts/encrypted-push/v1/fixtures/manifest.json",
+    "python3 -m pip install -r contracts/encrypted-push/v1/tools/requirements.txt -r crates/colliesocket-push/tools/requirements.txt",
+    "python3 contracts/encrypted-push/v1/tools/conformance.py",
+    "sh crates/colliesocket-push/tools/conformance.sh",
+    "python3 crates/colliesocket-push/tools/check_fixtures.py contracts/encrypted-push/v1/fixtures/crypto",
+    "git bundle verify provenance/encrypted-push/contract-v1-reconstructed.bundle"
+  ],
+  "launch_authorization": "Orchestrators 2 and 3 may start against this immutable C0 and manifest hash after fetching the separately reported H0. Orchestrator 1 continues the server lane.",
+  "reconstruction": {
+    "record": "handoff/reconstruction-v1.json",
+    "supersedes_unavailable_contract": "9bf0d9cab4f01873617f7ad22fa1a98a6a2ec5b7",
+    "supersedes_unavailable_handoff": "f7ef230bb495172b8b2d8ae3c3df4cac5adfc6f5",
+    "exact_recovery": false,
+    "historical_test_results_inherited": false
+  },
+  "change_control": "Freeze this READY manifest and C0. Use a new handoff version and a sibling contract version with migration notes for changed accepted behavior. Do not force consumer pins or silently mutate v1. No fourth protocol repository."
+}

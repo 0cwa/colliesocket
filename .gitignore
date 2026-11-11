@@ -1,3 +1,6 @@
 /target
+**/target/
+**/__pycache__/
 /tmp
 mollysocket.db
+*.sqlite-journal
