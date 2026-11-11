@@ -97,6 +97,13 @@ secret and P-256 key. Inspect configurations without dumping secret values.
 The project name is CollieSocket; the retained binary name is intentional
 upstream compatibility, not a second protocol.
 
+Logging controls apply only to the server's `mollysocket` namespace. Plain
+`RUST_LOG=info`/`debug`/`trace`, application module filters such as
+`mollysocket::push=debug`, and `-v`/`-vv`/`-vvv` remain available. Foreign module
+selectors and regex filters are ignored without echoing them. Dependency
+logging stays disabled even when a more-specific trace selector is supplied,
+because transport diagnostics can expose credentials or endpoint tokens.
+
 `allowed_endpoints` entries must be origins: scheme, host, and effective port,
 with an empty or root path and no query, fragment, or userinfo. Invalid entries
 authorize nothing. Endpoint paths and queries remain confidential subscription
@@ -242,7 +249,10 @@ acknowledgment from that receiver. See the
 
 Migration adds schema 2 encrypted state while retaining upstream connection
 columns. Existing connections are preserved, but legacy wake sending remains
-disabled unless explicitly enabled for a bounded period. Before migration:
+disabled unless explicitly enabled for a bounded period. Opening state with
+the candidate can apply migrations automatically, including from server startup
+or a CLI command; complete the backup before the candidate first opens an
+existing database. Before migration:
 
 1. Stop the server and any concurrent CLI drain/import processes. Confirm they
    have exited before handling state files.
