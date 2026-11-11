@@ -1,0 +1,168 @@
+{
+  "record_version": 1,
+  "disclosure": "ChatGPT recorded and verified the user's repository split; this is a documentation transfer, not native application acceptance.",
+  "request_date": "2026-11-11",
+  "former_project_label": "collie-fetch",
+  "current_project_label": "Collie Pack",
+  "source_repository": "0cwa/colliesocket",
+  "source_branch": "work/encrypted-push-v1",
+  "source_before_cleanup": "d75308e4669aedc62b5d4b9b855071cd5b918689",
+  "source_cleanup_commit": "Reported externally; no self hash embedded",
+  "destination": {
+    "repository": "0cwa/collie-pack",
+    "branch": "work/tauri-host-foundation",
+    "commit": "d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd",
+    "tree": "33d2e07d5197ad4b30931f452871cfd742c63f95",
+    "main_baseline_commit": "2b855f7ca90ff45b64cd52710a0dadce75c4d30d",
+    "baseline_scope": "The empty repository was initialized with one README so an in-repository PR has a main base.",
+    "import_receipt_url": "https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/handoff/repository-import-v1.json",
+    "current_product_record_url": "https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/handoff/product-direction-v3.json",
+    "server_dependency_record_url": "https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/integration/colliesocket-source.json",
+    "published_and_verified_before_source_removal": true
+  },
+  "transferred_records": [
+    {
+      "removed_source_path": "docs/architecture/native-gui-host-v1.md",
+      "source_commit": "d75308e4669aedc62b5d4b9b855071cd5b918689",
+      "source_sha256": "d8e4cec8044b17f92a106ba751464d88ef58399b2e9e284ba482c9e040d436d8",
+      "destination_repository": "0cwa/collie-pack",
+      "destination_commit": "d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd",
+      "destination_path": "docs/architecture/native-gui-host-v1.md",
+      "destination_url": "https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/docs/architecture/native-gui-host-v1.md",
+      "destination_sha256": "033cb793a510022c118c6504e735290379b63fecb98563a0838693e8a4411bb1",
+      "treatment": "adapted-current-document"
+    },
+    {
+      "removed_source_path": "docs/architecture/tauri-host-v1.md",
+      "source_commit": "d75308e4669aedc62b5d4b9b855071cd5b918689",
+      "source_sha256": "c7b45730690ece146aa41c342d0d8dfad047e522e858caf373341bd83bf64d98",
+      "destination_repository": "0cwa/collie-pack",
+      "destination_commit": "d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd",
+      "destination_path": "docs/architecture/tauri-host-v1.md",
+      "destination_url": "https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/docs/architecture/tauri-host-v1.md",
+      "destination_sha256": "05ad7931e7a87d55fd3023dd13d01b21c9ed2b477985698df2f80f2f7c39ba56",
+      "treatment": "adapted-current-document"
+    },
+    {
+      "removed_source_path": "handoff/product-direction-v1.json",
+      "source_commit": "d75308e4669aedc62b5d4b9b855071cd5b918689",
+      "source_sha256": "6f4dd9515e93c4d2c28f3f557cd177a72b2ddcda7b5da5ec04270def2d96314b",
+      "destination_repository": "0cwa/collie-pack",
+      "destination_commit": "d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd",
+      "destination_path": "provenance/colliesocket/product-direction-v1.json",
+      "destination_url": "https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/provenance/colliesocket/product-direction-v1.json",
+      "destination_sha256": "6f4dd9515e93c4d2c28f3f557cd177a72b2ddcda7b5da5ec04270def2d96314b",
+      "treatment": "byte-identical-historical-record"
+    },
+    {
+      "removed_source_path": "handoff/product-direction-v2.json",
+      "source_commit": "d75308e4669aedc62b5d4b9b855071cd5b918689",
+      "source_sha256": "86be6ec57462c8c72bf4287aeb91960eaa57ec39bbd50b699dd18d72ccb68395",
+      "destination_repository": "0cwa/collie-pack",
+      "destination_commit": "d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd",
+      "destination_path": "provenance/colliesocket/product-direction-v2.json",
+      "destination_url": "https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/provenance/colliesocket/product-direction-v2.json",
+      "destination_sha256": "86be6ec57462c8c72bf4287aeb91960eaa57ec39bbd50b699dd18d72ccb68395",
+      "treatment": "byte-identical-historical-record"
+    }
+  ],
+  "current_routing": [
+    {
+      "repository": "0cwa/collie-pack",
+      "owns": [
+        "Tauri app and native host control adapters",
+        "UnifiedPush provider/distributor integration",
+        "Native notification integration",
+        "Local, LAN and optional tunnel modes",
+        "Application packaging, deployment and combined-test reporting"
+      ]
+    },
+    {
+      "repository": "0cwa/colliesocket",
+      "owns": [
+        "Signal-facing sender and service/library API",
+        "Encryption, private enrollment, rotation, outbox and recovery",
+        "Canonical protocol/runtime contracts and fixtures",
+        "Server tests and source-bound evidence",
+        "Server image recipe and build CI"
+      ]
+    },
+    {
+      "repository": "0cwa/collieim-android",
+      "owns": [
+        "Existing recipient application, connector, lock/replay behavior and Android changes"
+      ],
+      "implementation_edited": false
+    },
+    {
+      "repository": "0cwa/collie-release-engineering",
+      "owns": [
+        "Existing Android engineering patches and release conventions"
+      ],
+      "implementation_edited": false
+    }
+  ],
+  "retained_server_material": {
+    "library_boundary": "src/lib.rs and src/main.rs remain in CollieSocket. run_cli is CLI-only; the safe restartable host API remains future server work.",
+    "library_evidence": "evidence/library-boundary-v1 remains with its tested server source; no new app acceptance is inferred.",
+    "packaging": "Containerfile.colliesocket, tools/image, images and server CI remain with the source checkout that their build helper archives.",
+    "inherited_examples": "Upstream Compose, Kubernetes, systemd and reverse-proxy examples remain historical server references, not validated Collie Pack deployment.",
+    "source_history": "All published commits remain reachable. The four files are removed from the active branch tree without rewriting history."
+  },
+  "immutable_records": {
+    "contract_C0": "0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f",
+    "ready_handoff_H0": "a58a46e278efdb89f9e6fd46d6b9556189a636eb",
+    "server_source_C1": "172ab2f378c9bd5a6d2fa9df94c3506414320339",
+    "candidate_manifest_M1": "84f43137358a93a8d973a594514443c54da3f76f",
+    "library_source_and_evidence": "d75308e4669aedc62b5d4b9b855071cd5b918689",
+    "fixture_manifest_sha256": "226bff31ca34b23e411929812ab86105ee970d0aab84848b1b53b18edff21568",
+    "unchanged_historical_name_records": [
+      "contracts/encrypted-push/v1/README.md",
+      "contracts/encrypted-push/v1/source-audit.md",
+      "handoff/parallel-start-v2.json",
+      "handoff/server-candidate-v2.json"
+    ],
+    "historical_name_policy": "Old collie-fetch names and access observations remain byte-identical historical records. Current routing is 0cwa/collie-pack. No verified GitHub repository rename or recovered old history is claimed.",
+    "consumer_pins_changed": false
+  },
+  "validation": {
+    "published_destination": "PASS: fresh GitHub branch, commit, full tree and import-manifest reads verified all 14 destination blob hashes and the parent baseline.",
+    "source_and_destination_transfer_hashes": "PASS: all four source hashes match the published pre-cleanup source; all destination hashes match the verified import.",
+    "removed_source_paths": "PASS: all four original app/product paths are absent from the resulting worktree.",
+    "historical_product_records": "PASS: both imported JSON records retain their exact source bytes.",
+    "all_other_existing_paths": "PASS: every pre-cleanup blob except README and the four removals is byte-identical.",
+    "preserved_existing_file_count": 215,
+    "source_evidence_inputs": "PASS: all 48 previously tested source/dependency inputs still match their recorded SHA-256 values.",
+    "local_document_links": "PASS: README and current PR draft local file targets resolve.",
+    "runtime_tests_for_this_cleanup": "NOT RUN: no runtime source, dependency, test or recipe changes; prior evidence retains its original execution and source pins.",
+    "new_native_app_acceptance": "NOT RUN",
+    "coderabbit_review": "NOT RUN"
+  },
+  "migration": "No runtime or database migration is introduced by this repository split. Existing encrypted-server migration requirements remain in the operator guide.",
+  "review": {
+    "colliesocket": {
+      "repository": "0cwa/colliesocket",
+      "head": "work/encrypted-push-v1",
+      "base": "main",
+      "base_commit": "f1e10c97d4644df4d326b9d7dedb160b297d41ca",
+      "compare_url": "https://github.com/0cwa/colliesocket/compare/main...work/encrypted-push-v1",
+      "draft": "handoff/pr-draft-v3.md",
+      "main_updated": false
+    },
+    "collie_pack": {
+      "repository": "0cwa/collie-pack",
+      "head": "work/tauri-host-foundation",
+      "base": "main",
+      "base_commit": "2b855f7ca90ff45b64cd52710a0dadce75c4d30d",
+      "compare_url": "https://github.com/0cwa/collie-pack/compare/main...work/tauri-host-foundation",
+      "draft_url": "https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/handoff/pr-draft-v1.md",
+      "main_initialized_with_readme_only": true
+    },
+    "pr_opened": false,
+    "review_requested": false,
+    "merged": false,
+    "release_published": false,
+    "deployed": false,
+    "coderabbit_access": "NOT VERIFIED: the branches and drafts are prepared; no integration configuration or review execution is claimed."
+  }
+}

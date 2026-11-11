@@ -1,5 +1,5 @@
-use crate::server;
-
 pub async fn server() {
-    server::run().await;
+    if let Err(code) = crate::server::run().await {
+        crate::cli::print_result(Err(code));
+    }
 }
