@@ -200,7 +200,7 @@ pub async fn cli() {
         Command::Push { command } => print_result(push::run(command).await),
         Command::Migrate {} => print_result(
             crate::push_store::PushStore::open(config::get_db())
-                .map(|_| serde_json::json!({"schema_version":2}))
+                .map(|_| serde_json::json!({"schema_version":crate::push_store::SCHEMA_VERSION}))
                 .map_err(|e| e.code()),
         ),
         Command::Ready {} => print_result(

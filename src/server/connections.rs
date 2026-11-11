@@ -77,7 +77,7 @@ async fn connection_loop(co: Connection, encrypted_mode: bool) {
             if result.err().is_some_and(|e|matches!(e.downcast_ref::<SignalWebSocketError>(),Some(SignalWebSocketError::RegistrationRemoved))){
                 // Only Signal authentication failure can mark these exact local
                 // credentials forbidden. No late old-worker status or unlink.
-                if DB.forbid_if_current(&co).unwrap_or(false){METRICS.forbiddens.inc();log::info!("signal_credentials_rejected");}
+                if socket.current_connection().ok().is_some_and(|current|DB.forbid_if_current(&current).unwrap_or(false)){METRICS.forbiddens.inc();log::info!("signal_credentials_rejected");}
             }
         },
         _=metrics=>log::warn!("signal_metrics_channel_closed"),

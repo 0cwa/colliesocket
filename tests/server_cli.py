@@ -295,11 +295,11 @@ class Harness:
 
     def migrations(self):
         self.stage = "migration and protected state modes"
-        require(self.cli("migrate") == {"schema_version": 2}, "migration did not select schema2")
+        require(self.cli("migrate") == {"schema_version": 3}, "migration did not select schema3")
         require(stat.S_IMODE(self.db.parent.stat().st_mode) == 0o700, "state directory is not0700")
         require(stat.S_IMODE(self.db.stat().st_mode) == 0o600, "state database is not0600")
-        require(self.rows("PRAGMA user_version") == [(2,)], "SQLite schema marker differs from CLI")
-        require(self.cli("migrate") == {"schema_version": 2}, "migration is not idempotent")
+        require(self.rows("PRAGMA user_version") == [(3,)], "SQLite schema marker differs from CLI")
+        require(self.cli("migrate") == {"schema_version": 3}, "migration is not idempotent")
         before = self.snapshot()
         self.db.chmod(0o644)
         try:
@@ -331,7 +331,7 @@ class Harness:
                 self.cli("migrate", config=config, error="state_unavailable")
                 require(self.rows("PRAGMA user_version", database=database) == [(99,)], "future schema was downgraded")
             else:
-                require(self.cli("migrate", config=config) == {"schema_version": 2}, "upstream schema migration failed")
+                require(self.cli("migrate", config=config) == {"schema_version": 3}, "upstream schema migration failed")
             require(self.rows("SELECT * FROM connections", database=database) == [original], "migration changed legacy credentials or forbidden state")
         self.mark("upstream schemas0/1 preserve connection tuple and forbidden flag;future schema fails closed")
 

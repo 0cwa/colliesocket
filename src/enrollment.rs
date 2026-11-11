@@ -106,9 +106,9 @@ pub async fn import(bytes: &[u8]) -> Result<Value, Error> {
         }
     };
     Ok(
-        json!({"enrollment_version":1,"request_id":enrollment.request_id,
+        json!({"enrollment_version":enrollment.enrollment_version,"request_id":enrollment.request_id,
         "instance":enrollment.subscription.instance,"subscription_epoch":receipt.subscription_epoch,
-        "selected_event_version":1,"capabilities":["wake","test","status"],
+        "selected_event_version":enrollment.subscription.event_version(),"capabilities":["wake","test","status"],
         "status":if matches!(receipt.disposition,EnrollmentDisposition::Unchanged){"unchanged"}else{"accepted"}}),
     )
 }
@@ -124,7 +124,7 @@ pub fn status(account: &str) -> Result<Value, Error> {
         .map_err(|e| Error(e.code()))?
         .ok_or(Error("not_found"))?;
     Ok(
-        json!({"instance":sub.instance,"subscription_epoch":sub.subscription_epoch,"state":state,"event_version":1}),
+        json!({"instance":sub.instance,"subscription_epoch":sub.subscription_epoch,"state":state,"event_version":sub.event_version()}),
     )
 }
 

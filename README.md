@@ -25,6 +25,40 @@ for the pinned local build and CI interface. Server candidate manifests under
 NOT RUN gates. Android, physical-device, deployment and shipping security
 acceptance are separate from the local synthetic server checks.
 
+## Endpoint updates over Signal
+
+[Enrollment v2](contracts/encrypted-push/v2/README.md) lets a compatible Collie IM
+phone update its push endpoint and encryption keys through Signal. CollieSocket
+can stay behind NAT with no public enrollment port. The phone generates a
+separate 32-byte control key and includes it in a protected version-2 enrollment
+file. Import that file locally as the service account:
+
+```sh
+mollysocket enrollment import --file /private/path/enrollment-v2.json
+```
+
+The file must have mode `0600`; keep it private because it contains the linked
+device password, endpoint and control key. Keyed v2 enrollments advertise event
+versions `[1,2]` and receive version-2 encrypted pushes. Existing version-1
+imports and version-2 imports without a control key retain version-1 behavior.
+Upgrading an existing enrollment requires a new private import at the next
+subscription epoch. Database migration to schema 3 is automatic; an older
+server must use a pre-upgrade backup, not the migrated database.
+
+For later endpoint or key changes, the phone sends a dedicated non-urgent sync
+message to its own account. Only the CollieSocket device's copy contains the
+encrypted update. CollieSocket validates it, saves the new subscription and
+queues an encrypted confirmation before acknowledging Signal. The phone keeps
+retrying the same update until it receives that confirmation at the new endpoint
+and epoch. A newer valid update can recover a stale push subscription; forged
+updates and old replays cannot change it. Password, control-key and account
+changes still require private import. The configured destination restrictions
+continue to apply to every update and push attempt.
+
+The [v2 contract](contracts/encrypted-push/v2/README.md) specifies the exact wire
+format, phone behavior, replay rules and synthetic checks. It is additive to the
+frozen v1 contract.
+
 ## Repository boundaries
 
 ChatGPT moved the desktop/Android application planning to

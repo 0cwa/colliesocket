@@ -33,10 +33,14 @@ pub fn uuid_v4() -> Result<String, &'static str> {
         &hex[20..]
     ))
 }
-fn new_event(sub: &Subscription, kind: &str, code: Option<&str>) -> Result<Event, &'static str> {
+pub(crate) fn new_event(
+    sub: &Subscription,
+    kind: &str,
+    code: Option<&str>,
+) -> Result<Event, &'static str> {
     let issued = now();
     Ok(Event {
-        version: 1,
+        version: sub.event_version(),
         event_id: uuid_v4()?,
         instance: sub.instance.clone(),
         subscription_epoch: sub.subscription_epoch,
