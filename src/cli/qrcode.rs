@@ -15,6 +15,10 @@ pub enum QrcodeCommand {
 
 /// Print mollysocket link URL and show the associated QR Code
 pub fn qrcode(command: &QrcodeCommand) {
+    if matches!(command, QrcodeCommand::Url { .. }) || !crate::config::legacy_wake_enabled() {
+        crate::cli::print_result(Err("legacy_disabled"));
+        return;
+    }
     let url = match command {
         QrcodeCommand::Url { url } => qrcode::gen_url(url),
         QrcodeCommand::Airgapped {} => qrcode::gen_url_airgapped(),
