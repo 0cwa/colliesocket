@@ -1,0 +1,125 @@
+{
+  "evidence_version": 2,
+  "state": "PASS",
+  "started_at_utc": "2026-11-10T20:44:15Z",
+  "scope": "Fresh local server verification; no results inherited from an earlier run.",
+  "source": {
+    "base_commit": "0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f",
+    "branch": "work/encrypted-push-v1",
+    "tested_state": "working tree after cargo fmt; base_commit is not a source-candidate claim",
+    "manifest": "evidence/server-rebuild-v2/source-inputs.json",
+    "manifest_sha256": "676fd83fae88af0b04603c13fddc5b55b13f03cfe17c314006141ce913e8464a"
+  },
+  "tool_versions_path": "evidence/server-rebuild-v2/tool-versions.json",
+  "log_normalization": {
+    "<repo>": "the repository root at test execution",
+    "<toolchains>": "the local toolchain/cache/temp root; no source contents are changed"
+  },
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all"
+      ],
+      "status": "PASS",
+      "exit_code": 0,
+      "elapsed_seconds": 0.103,
+      "log": "evidence/server-rebuild-v2/01-format.log"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "status": "PASS",
+      "exit_code": 0,
+      "elapsed_seconds": 0.104,
+      "log": "evidence/server-rebuild-v2/02-format-check.log"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked"
+      ],
+      "status": "PASS",
+      "exit_code": 0,
+      "elapsed_seconds": 2.929,
+      "log": "evidence/server-rebuild-v2/03-cargo-test.log"
+    },
+    {
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked"
+      ],
+      "status": "PASS",
+      "exit_code": 0,
+      "elapsed_seconds": 96.974,
+      "log": "evidence/server-rebuild-v2/04-release-build.log"
+    },
+    {
+      "command": [
+        "python3",
+        "tests/server_cli.py",
+        "--binary",
+        "target/release/mollysocket",
+        "--output",
+        "evidence/server-rebuild-v2/cli-release.json"
+      ],
+      "status": "PASS",
+      "exit_code": 0,
+      "elapsed_seconds": 1.576,
+      "log": "evidence/server-rebuild-v2/05-release-cli.log"
+    }
+  ],
+  "not_run": [
+    "explicitly ignored external Signal staging/public TLS probes",
+    "real Signal authentication or linked-device credentials",
+    "physical Android, connector integration, or lock-state acceptance",
+    "real UnifiedPush distributor or deployment acceptance",
+    "VAPID provider acceptance or production enrollment",
+    "container build/runtime and non-host architecture execution in this evidence pass",
+    "independent security audit"
+  ],
+  "root_test_counts": {
+    "passed": 56,
+    "failed": 0,
+    "ignored": 2,
+    "measured": 0,
+    "filtered_out": 0
+  },
+  "release_binary": {
+    "path": "target/release/mollysocket",
+    "sha256": "006311ec80e031bc6586110a441522f13e2dbf9f42562633c6c347486b91b887",
+    "bytes": 10337256,
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "cargo_lock": {
+    "path": "Cargo.lock",
+    "sha256": "9156abf0076451b56c5098acb0d1bf6f6e49800a3e6694f9bd33c0c7482c3243"
+  },
+  "release_cli": {
+    "result": "PASS",
+    "scenario_groups_passed": 14,
+    "result_path": "evidence/server-rebuild-v2/cli-release.json"
+  },
+  "invariants": {
+    "source_inputs_stable_after_format": true,
+    "contracts_fixtures_generated_proto_unchanged": true
+  },
+  "finished_at_utc": "2026-11-10T20:45:57Z",
+  "environment_overrides": {
+    "PATH_prepend": "<toolchains>/cargo/bin",
+    "CARGO_HOME": "<toolchains>/cargo",
+    "RUSTUP_HOME": "<toolchains>/rustup",
+    "TMPDIR": "<toolchains>/tmp",
+    "CARGO_TERM_COLOR": "never",
+    "RUST_BACKTRACE": "0"
+  }
+}

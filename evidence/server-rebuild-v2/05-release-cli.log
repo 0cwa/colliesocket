@@ -1,0 +1,37 @@
+Command (repository root): python3 tests/server_cli.py --binary target/release/mollysocket --output evidence/server-rebuild-v2/cli-release.json
+Normalization: <repo> and <toolchains> replace local absolute roots.
+
+{
+  "result": "PASS",
+  "scope": "synthetic server CLI and loopback worker; not device/deployment acceptance",
+  "binary_sha256": "006311ec80e031bc6586110a441522f13e2dbf9f42562633c6c347486b91b887",
+  "python": "3.12.14",
+  "cryptography": "50.0.0",
+  "openssl": "OpenSSL 4.0.1 9 Jun 2026",
+  "checks": [
+    "fresh/idempotent migration;0700directory0600database;unsafe modes and state symlink rejected",
+    "upstream schemas0/1 preserve connection tuple and forbidden flag;future schema fails closed",
+    "file/stdin bounds;symlink/hardlink/FIFO/mode refusal;malformed keys/capabilities/downgrade leave no partial state",
+    "protected file acceptance and pipe replay;exact receipt/version/capabilities;request-ID conflict is atomic",
+    "real test/wake POST binary4096;standard headers/noTopic;independent OpenSSL decrypt;fresh salt/key;no device-delivery claim",
+    "same-URL auth/epoch rotation purges old queue;old receipt cannot roll back;old auth cannot decrypt new event",
+    "HTTP410 stops push without unlink/forbid;old request/same epoch cannot reactivate;next epoch recovers",
+    "narrow account allowlist blocks existing queue,new wake/ping,and enrollment receipt access",
+    "stored receipt recovery bypasses unavailable .invalid destination/current destination policy;new request remains denied",
+    "legacy disabled/expired/overlong gates;explicit fixed wake only;encrypted account cannot downgrade;edge QR enrollment refused",
+    "real push-only server;readiness bound127.0.0.1;CLI probe;public ready404/POST404;discovery has no QR credential path",
+    "actual background worker sends independently decrypted wake;SIGTERM exits cleanly",
+    "trace-level CLI/worker/config/error output excludes endpoint,password,auth,and receiver-key canaries",
+    "explicit idempotent local removal clears state and reports signal_unlinkedfalse"
+  ],
+  "not_run": [
+    "real Signal connection or linked-device credentials",
+    "Android connector, physical device, or lock-state acceptance",
+    "real UnifiedPush distributor or deployment acceptance",
+    "production enrollment, VAPID acceptance, or security audit"
+  ],
+  "checks_passed": 14
+}
+
+Exit code: 0
+Elapsed seconds: 1.576

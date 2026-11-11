@@ -1,0 +1,78 @@
+running 62 tests
+test config::tests::check_defined_uuid ... ok
+test cli::tests::verbosity_controls_application_default_without_losing_explicit_module_filters ... ok
+test cli::tests::direct_dependency_records_do_not_reach_the_output_writer ... ok
+test cli::tests::plain_levels_and_application_module_filters_remain_usable ... ok
+test config::tests::check_wildcard_uuid ... ok
+test cli::tests::specific_dependency_selectors_cannot_enable_any_dependency_level ... ok
+test push::tests::provider_acceptance_retry_and_stale_classification ... ok
+test config::tests::check_endpoint ... ok
+test config::tests::check_wildcard_endpoint ... ok
+test enrollment::tests::bounded_utf8_and_invalid_json_fail_closed ... ok
+test push_store::tests::canonical_digest_sorts_nested_objects_and_preserves_array_order ... ok
+test push_store::tests::event_validation_rejects_replay_metadata_and_explicit_null_code ... ok
+test enrollment::tests::protected_files_reject_links_public_modes_and_fifos ... ok
+test push::tests::all_event_kinds_use_the_same_real_encrypted_profile ... ok
+test db::tests::test_db ... ok
+test push_store::tests::future_and_partial_schemas_are_rejected_without_version_downgrade ... ok
+test db::tests::late_signal_rejection_does_not_forbid_replacement_credentials ... ok
+test push_store::tests::legacy_snapshot_fails_closed_after_upgrade_removal_or_credential_changes ... ok
+test push_store::tests::event_ledger_retains_idempotency_after_provider_acceptance ... ok
+test push_store::tests::legacy_writes_cannot_overwrite_or_delete_encrypted_connections ... ok
+test push_store::tests::connection_snapshot_rejects_stale_credentials_and_intervening_epoch_changes ... ok
+test push_store::tests::protects_database_paths_and_redacts_secrets ... ok
+test push_store::tests::rejects_malformed_keys_urls_versions_and_json_shapes ... ok
+test push_store::tests::crashed_claims_resume_after_lease_and_late_completion_cannot_remove_replacement ... ok
+test push_store::tests::receipts_are_durable_and_reuse_conflicts_never_mutate ... ok
+test push_store::tests::only_authenticated_new_credentials_reset_signal_forbidden ... ok
+test server::ready::tests::heartbeat_age_and_clock_rollback ... ok
+test utils::post_allowed::tests::encrypted_binary_body_and_headers_reach_local_socket ... ok
+test utils::post_allowed::tests::errors_redact_endpoint_and_discard_reqwest_source ... ok
+test push_store::tests::registration_rollback_restores_connection_subscription_queue_and_receipt ... ok
+test utils::post_allowed::tests::explicit_allowance_is_exact_origin_without_credentials ... ok
+test utils::post_allowed::tests::literal_private_addresses_fail_without_network ... ok
+test utils::post_allowed::tests::legacy_body_is_fixed_without_fake_encryption ... ok
+test push_store::tests::migrates_legacy_zero_and_one_without_changing_connections ... ok
+test utils::post_allowed::tests::rejects_private_special_and_mapped_addresses ... ok
+test utils::post_allowed::tests::unresolved_fallback_fails_closed ... ok
+test utils::post_allowed::tests::validates_frame_budget_ttl_and_fixed_legacy_payload ... ok
+test utils::tests::bare_url_ping_fails_without_configuration_or_network ... ok
+test utils::tests::endpoint_redaction_is_total_and_never_parses_input ... ok
+test utils::post_allowed::tests::redirect_does_not_reach_another_listener ... ok
+test push_store::tests::request_capacity_preserves_original_receipt_and_does_not_prune_history ... ok
+test vapid::tests::test_gen_vapid_key ... ok
+test vapid::tests::test_wrong_vapid ... ok
+test vapid::tests::test_signer_pubkey ... ok
+test ws::signalwebsocket::tests::closed_writer_propagates_from_envelope_acknowledgement ... ok
+test ws::signalwebsocket::tests::immutable_mode_and_exact_raw_endpoint_are_preserved ... ok
+test ws::tls::tests::connect_trusted_server ... ignored, manual external TLS probe; requires DNS and access to Signal staging
+test ws::tls::tests::connect_untrusted_server ... ignored, manual external TLS probe; requires public DNS and network access
+test ws::tls::tests::embedded_signal_root_builds_connector_without_network ... ok
+test ws::websocket_connection::tests::expired_keepalive_fails_without_queueing_another_frame ... ok
+test ws::websocket_connection::tests::keepalive_queue_is_bounded_and_closed_receiver_is_an_error ... ok
+test ws::signalwebsocket::tests::repeated_metrics_do_not_gain_new_reserved_sender_slots ... ok
+test ws::websocket_connection::tests::missing_or_closed_writer_returns_error_without_panicking ... ok
+test ws::websocket_connection::tests::websocket_queue_is_bounded_and_resumes_after_drain ... ok
+test ws::websocket_connection::tests::local_peer_disconnect_clears_stored_writer ... ok
+test vapid::tests::test_vapid_other_tool ... ok
+test utils::post_allowed::tests::proxy_environment_is_ignored ... ok
+test push_store::tests::provider_rejections_never_delete_or_forbid_signal_connections ... ok
+test push_store::tests::same_url_rotation_is_atomic_and_old_receipts_do_not_reactivate_stale ... ok
+test push_store::tests::global_account_capacity_rejects_new_registration_but_preserves_receipt_replay ... ok
+test push_store::tests::retry_schedule_and_provider_retry_after_are_bounded_by_attempts_and_expiry ... ok
+test push_store::tests::queue_and_ledger_capacity_fail_closed_without_partial_inserts ... ok
+
+test result: ok. 60 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running unittests src/main.rs (target/debug/deps/mollysocket-e024ac9ab3b3bde8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mollysocket
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

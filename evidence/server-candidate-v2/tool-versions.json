@@ -1,0 +1,16 @@
+{
+  "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)\nbinary: rustc\ncommit-hash: 1159e78c4747b02ef996e55082b704c09b970588\ncommit-date: 2025-09-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.90.0\nLLVM version: 20.1.8",
+  "cargo": "cargo 1.90.0 (840b83a10 2025-07-30)",
+  "rustfmt": "rustfmt 1.8.0-stable (1159e78c47 2025-09-14)",
+  "python": "Python 3.12.14",
+  "openssl_cli": "OpenSSL 3.5.7 9 Jun 2026 (Library: OpenSSL 3.5.7 9 Jun 2026)",
+  "platform": "Linux x86_64",
+  "cc": "cc (Debian 14.2.0-19) 14.2.0",
+  "linker": "GNU ld (GNU Binutils for Debian) 2.44",
+  "openssl_pkg_config": "3.5.7",
+  "python_crypto": {
+    "cryptography": "50.0.0",
+    "openssl": "OpenSSL 4.0.1 9 Jun 2026",
+    "sqlite": "3.53.1"
+  }
+}

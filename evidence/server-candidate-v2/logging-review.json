@@ -1,0 +1,56 @@
+{
+  "reviewed_at_utc": "2026-11-10T21:04:48Z",
+  "evidence_kind": "Read cached primary dependency source; verify cached crate archive checksums against Cargo.lock.",
+  "dependencies": [
+    {
+      "name": "env_filter",
+      "version": "1.0.1",
+      "source_commit": "41320bf391e3d62cc0171f83403c6d684686ac98",
+      "crate_archive_sha256": "32e90c2accc4b07a8456ea0debdc2e7587bdd890680d71173a15d4ae604f6eef",
+      "archive_matches_cargo_lock": true,
+      "inspected_files": [
+        {
+          "path_in_crate": "src/filter.rs",
+          "sha256": "27dceef9956aae3e34c53b169b8e81069fbad09c0ac2c675064f9d11a889f80b"
+        },
+        {
+          "path_in_crate": "src/directive.rs",
+          "sha256": "ba7d4d01a9dd76f31e8a761ffbc1d002fa97461d5606cfbf31e173392f90ffdc"
+        },
+        {
+          "path_in_crate": "src/parser.rs",
+          "sha256": "fe519dfbbab6eb21f2c900ce6edb7c9e070b3ff93d911f3e254e3c0b34ff2728"
+        }
+      ]
+    },
+    {
+      "name": "env_logger",
+      "version": "0.11.10",
+      "source_commit": "41320bf391e3d62cc0171f83403c6d684686ac98",
+      "crate_archive_sha256": "0621c04f2196ac3f488dd583365b9c09be011a4ab8b9f37248ffcc8f6198b56a",
+      "archive_matches_cargo_lock": true,
+      "inspected_files": [
+        {
+          "path_in_crate": "src/logger.rs",
+          "sha256": "aef2731d9348ac4b5f9cbc5c556de7a2e2c51c7c34376a9ed8cf3af01f39bcfa"
+        }
+      ]
+    }
+  ],
+  "finding": "env_filter sorts directives by module-name length, searches them in reverse, and selects the first matching target prefix. A longer dependency trace selector survives an appended base-module Off directive. Builder::new reads no environment.",
+  "implementation": "Construct a new builder with global Off, parse only plain levels and validated mollysocket module selectors into typed direct filter calls, and enforce the mollysocket namespace again in the Log wrapper before enabled/log forwarding. Invalid or foreign directives are ignored without echoing the input.",
+  "compatibility": [
+    "plain off/error/warn/info/debug/trace levels apply only to application logs",
+    "mollysocket and mollysocket::module selectors remain supported, including bare module shorthand",
+    "-v/-vv/-vvv control the application default and preserve explicit module filters",
+    "RUST_LOG_STYLE auto/always/never remains supported",
+    "foreign namespaces and regex directives are not accepted"
+  ],
+  "regression_tests": [
+    "cli::tests::specific_dependency_selectors_cannot_enable_any_dependency_level",
+    "cli::tests::plain_levels_and_application_module_filters_remain_usable",
+    "cli::tests::verbosity_controls_application_default_without_losing_explicit_module_filters",
+    "cli::tests::direct_dependency_records_do_not_reach_the_output_writer"
+  ],
+  "integration": "The actual CLI/worker suite now includes specific dependency trace selectors in RUST_LOG and checks synthetic secret canaries across all captured output."
+}
