@@ -85,6 +85,9 @@ with `push_only=false` against a local TLS websocket and a local push provider.
 It sends Signal protobuf envelopes, checks their acknowledgements, and
 independently decrypts the resulting encrypted `wake` push. This covers the
 Signal-to-worker path in addition to the CLI checks above.
+Non-waking inputs are followed by another acknowledged envelope before the
+test checks the durable event ledger, so a stalled websocket or a quickly
+discarded queue entry cannot make a suppression check pass.
 
 ```sh
 cargo test --locked --features test-signal
@@ -99,7 +102,9 @@ with that feature and debug assertions accept `test_signal_url` and
 `test_signal_ca`, or their
 `MOLLY_TEST_SIGNAL_URL` and `MOLLY_TEST_SIGNAL_CA` environment equivalents. Both
 must be provided together: a `wss` URL with a loopback IP address and a PEM CA
-file. The fake's CA replaces the pinned Signal root for that test process;
+file. The CA must be a regular file owned by the current user, with mode 0600,
+one hard link, and at most 16 KiB; symlinks and special files are rejected.
+The fake's CA replaces the pinned Signal root for that test process;
 certificate and hostname verification stay enabled. The test creates its own
 temporary CA, certificate, protected state, and synthetic enrollment.
 

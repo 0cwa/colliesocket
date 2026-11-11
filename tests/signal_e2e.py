@@ -29,7 +29,10 @@ from server_cli import (
 
 
 class SignalHarness(Harness):
+    """Trace synthetic envelopes through the real worker to independently decrypted pushes."""
+
     def start_signal_worker(self, signal, ca_path=None):
+        """Launch the real worker against the fake WSS peer with captured trace logs."""
         config = self.make_config(
             push_only=False, webserver=False, ready_port=fresh_port(),
             test_signal_url=signal.url, test_signal_ca=str(ca_path or signal.ca_path),
@@ -44,6 +47,7 @@ class SignalHarness(Harness):
         )
 
     def require_no_push(self, timeout=1.25):
+        """Observe a quiet provider window, an empty queue and a live server process."""
         try:
             self.provider.requests.get(timeout=timeout)
         except queue.Empty:
@@ -53,7 +57,40 @@ class SignalHarness(Harness):
         require(self.queued() == 0, "non-waking input left a queued encrypted push")
         require(self.worker.poll() is None, "Signal worker exited unexpectedly")
 
-    def capture_signal_wake(self, sent_at):
+    def event_ids(self):
+        """Read the durable ledger, whose IDs survive removal from the send queue."""
+        return {row[0] for row in self.rows("SELECT event_id FROM encrypted_push_event_ids")}
+
+    @staticmethod
+    def barrier(signal):
+        """Wait for a later nonurgent ACK to establish ordered processing of earlier input."""
+        # The server processes requests in order. ACKing this later nonurgent
+        # envelope proves processing of the preceding input has completed.
+        signal.wait_ack(signal.send_envelope(signal_envelope(urgent=False)))
+
+    def require_suppressed(self, signal, envelope):
+        """Prove an acknowledged input creates neither a durable event nor a provider POST."""
+        previous = self.event_ids()
+        signal.wait_ack(signal.send_envelope(envelope))
+        self.barrier(signal)
+        self.require_no_push()
+        # The durable ID ledger outlives queue consumption, so a worker cannot
+        # hide an incorrectly enqueued event by discarding it before inspection.
+        require(self.event_ids() == previous, "non-waking input recorded a durable event ID")
+
+    def send_wake(self, signal, envelope, request_id=None):
+        """Correlate one envelope with one new ledger ID and its decrypted provider event."""
+        previous = self.event_ids()
+        sent_at = int(time.time())
+        signal.wait_ack(signal.send_envelope(envelope, request_id=request_id))
+        self.barrier(signal)
+        created = self.event_ids() - previous
+        require(len(created) == 1, "Signal envelope did not record exactly one new durable event")
+        event_id = created.pop()
+        return event_id, self.capture_signal_wake(sent_at, event_id)
+
+    def capture_signal_wake(self, sent_at, expected_event_id):
+        """Verify encrypted transport, v1 event fields and bounded provider acceptance."""
         path, headers, body = self.provider.take(timeout=5)
         require(path == ENDPOINT_PATH, "Signal wake reached the wrong provider endpoint")
         require(len(body) == 4096, "Signal wake is not a fixed-size encrypted push")
@@ -82,6 +119,8 @@ class SignalHarness(Harness):
                 "Signal wake has the wrong contract version or enrollment epoch")
         require(event["instance"] == "cli-fixture-instance" and event["kind"] == "wake",
                 "Signal envelope did not produce the enrolled instance's wake event")
+        require(event["event_id"] == expected_event_id,
+                "captured Signal wake does not match the newly recorded durable event")
         event_id = uuid.UUID(event["event_id"])
         require(event_id.version == 4 and str(event_id) == event["event_id"],
                 "Signal wake event ID is not canonical UUIDv4")
@@ -96,8 +135,10 @@ class SignalHarness(Harness):
             time.sleep(0.02)
         require(self.queued() == 0 and self.current()["state"] == "active",
                 "provider acceptance did not finish the encrypted wake attempt")
+        return body
 
     def run(self):
+        """Exercise dispatch, suppression, TLS verification and redaction with synthetic peers."""
         self.stage = "test-signal build preflight (cargo build --locked --features test-signal)"
         # Ordinary/release binaries ignore the compiled-out fields. Refuse them
         # before starting a server, so a mistaken test invocation cannot connect
@@ -119,24 +160,26 @@ class SignalHarness(Harness):
                 signal.wait_connected()
                 self.mark("real server connects through TLS and authenticates the synthetic linked device")
 
-                request_id = signal.send_envelope(signal_envelope(urgent=False))
-                signal.wait_ack(request_id)
-                self.require_no_push()
-                self.mark("nonurgent Signal envelope is acknowledged without enqueueing or sending a push")
+                self.require_suppressed(signal, signal_envelope(urgent=False))
+                self.mark("nonurgent Signal envelope and later ACK barrier leave no durable event or provider push")
 
-                request_id = signal.send_envelope(b"\xff")
-                signal.wait_ack(request_id)
-                self.require_no_push()
-                self.mark("malformed Signal envelope is acknowledged without enqueueing or sending a push")
+                self.require_suppressed(signal, b"\xff")
+                self.mark("malformed Signal envelope and later ACK barrier leave no durable event or provider push")
 
-                sent_at = int(time.time())
-                request_id = signal.send_envelope(
-                    signal_envelope(urgent=True), request_id=(1 << 40) + 1
+                first_id, first_body = self.send_wake(
+                    signal, signal_envelope(urgent=True), request_id=(1 << 40) + 1
                 )
-                signal.wait_ack(request_id)
-                self.capture_signal_wake(sent_at)
-                self.mark("urgent envelope and matching uint64 acknowledgement produce a real encrypted provider POST")
+                self.mark("urgent envelope and matching uint64 ACK produce a durable event and matching encrypted provider POST")
                 self.mark("independent RFC 8291 decryption verifies wake schema, instance, epoch, UUID, timestamps and padding")
+                self.require_no_push()
+
+                # The no-extra-push observation above also clears the real
+                # one-second wake throttle; no test-only clock is needed.
+                second_id, second_body = self.send_wake(signal, signal_envelope(urgent=None))
+                require(first_id != second_id and first_body[:16] != second_body[:16]
+                        and first_body[21:86] != second_body[21:86],
+                        "separate Signal wakes reused event ID, encryption salt or sender key")
+                self.mark("omitted urgent field preserves proto2 default true with a fresh encrypted wake")
                 self.require_no_push()
             finally:
                 self.stop_worker()
@@ -174,6 +217,7 @@ class SignalHarness(Harness):
 
 
 def main():
+    """Run the isolated synthetic suite and emit a redacted, nonempty result record."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/mollysocket")
     parser.add_argument("--output", type=Path, help="optional redacted JSON result path")

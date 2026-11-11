@@ -346,7 +346,8 @@ impl Config {
             return Err(());
         }
         if let Some(path) = &self.test_signal_ca {
-            let pem = std::fs::read(path).map_err(|_| ())?;
+            let pem = crate::enrollment::read_protected_file(std::path::Path::new(path), 16 * 1024)
+                .map_err(|_| ())?;
             self.test_signal_root = Some(native_tls::Certificate::from_pem(&pem).map_err(|_| ())?);
         }
         Ok(())
@@ -495,9 +496,19 @@ mod tests {
         assert!(!cfg.valid_test_signal_options());
     }
 
-    #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+    #[cfg(all(
+        feature = "test-signal",
+        debug_assertions,
+        colliesocket_test_signal,
+        unix
+    ))]
     #[test]
-    fn test_signal_ca_is_loaded_and_invalid_files_fail_closed() {
+    fn test_signal_ca_is_bounded_protected_and_invalid_files_fail_closed() {
+        use std::{
+            fs,
+            os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+        };
+
         let directory = std::env::temp_dir().join(format!(
             "colliesocket-test-ca-{}-{}",
             std::process::id(),
@@ -506,7 +517,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::create_dir(&directory).unwrap();
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
         let path = directory.join("root.pem");
         let mut cfg = Config {
             test_signal_url: Some("wss://127.0.0.1:12345/v1/websocket/".into()),
@@ -514,10 +526,37 @@ mod tests {
             ..Config::default()
         };
         assert!(cfg.load_test_signal_root().is_err());
-        std::fs::write(&path, b"not a PEM certificate").unwrap();
+        fs::write(&path, b"not a PEM certificate").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(cfg.load_test_signal_root().is_err());
         let pem = include_bytes!("ws/certs/signal-messenger.pem");
-        std::fs::write(&path, pem).unwrap();
+        // A valid PEM prefix prevents the parser itself from masking a missing
+        // read bound: excess trailing whitespace must still be rejected.
+        let mut oversized = pem.to_vec();
+        oversized.resize(16 * 1024 + 1, b'\n');
+        fs::write(&path, oversized).unwrap();
+        assert!(cfg.load_test_signal_root().is_err());
+        fs::write(&path, pem).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(cfg.load_test_signal_root().is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let link = directory.join("root-link.pem");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        cfg.test_signal_ca = Some(link.to_str().unwrap().into());
+        assert!(cfg.load_test_signal_root().is_err());
+        fs::remove_file(&link).unwrap();
+
+        cfg.test_signal_ca = Some(path.to_str().unwrap().into());
+        fs::hard_link(&path, &link).unwrap();
+        assert!(cfg.load_test_signal_root().is_err());
+        fs::remove_file(&link).unwrap();
+
+        cfg.test_signal_ca = Some(directory.to_str().unwrap().into());
+        assert!(cfg.load_test_signal_root().is_err());
+        assert!(cfg.test_signal_root.is_none());
+
+        cfg.test_signal_ca = Some(path.to_str().unwrap().into());
         cfg.load_test_signal_root().unwrap();
         assert_eq!(
             cfg.test_signal_root.as_ref().unwrap().to_der().unwrap(),
@@ -526,7 +565,21 @@ mod tests {
                 .to_der()
                 .unwrap()
         );
-        std::fs::remove_dir_all(directory).unwrap();
+
+        let fifo = directory.join("root.fifo");
+        let fifo_path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+        cfg.test_signal_ca = Some(fifo.to_str().unwrap().into());
+        cfg.test_signal_root = None;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let check = std::thread::spawn(move || {
+            sender.send(cfg.load_test_signal_root().is_err()).unwrap();
+        });
+        assert!(receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("test CA FIFO must be rejected without waiting for a writer"));
+        check.join().unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 
     fn test_config(uuid: &str, endpoint: &str) -> Config {

@@ -36,11 +36,13 @@ class FakeSignalError(Exception):
 
 
 def _require(condition, label):
+    """Fail with a fixed label so assertions never expose credentials or frames."""
     if not condition:
         raise FakeSignalError(label)
 
 
 def _private_file(path, data):
+    """Write temporary TLS material with owner-only read/write permissions."""
     path.write_bytes(data)
     path.chmod(0o600)
     return path
@@ -52,7 +54,12 @@ def create_tls_material(directory, certificate_name="127.0.0.1"):
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
     ca_key = ec.generate_private_key(ec.SECP256R1())
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Synthetic Signal test CA")])
+    # Distinct issuer names make an unrelated CA fail as an unknown issuer,
+    # rather than a signature failure against a different key with the same name.
+    ca_id = f"{x509.random_serial_number():x}"[:32]
+    ca_name = x509.Name([x509.NameAttribute(
+        NameOID.COMMON_NAME, f"Synthetic Signal test CA {ca_id}"
+    )])
     ca = (
         x509.CertificateBuilder()
         .subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
@@ -88,6 +95,7 @@ def create_tls_material(directory, certificate_name="127.0.0.1"):
 
 
 def _varint(number):
+    """Encode an unsigned protobuf integer, rejecting values outside uint64."""
     _require(0 <= number <= (1 << 64) - 1, "protobuf integer outside uint64 range")
     result = bytearray()
     while number >= 128:
@@ -98,10 +106,12 @@ def _varint(number):
 
 
 def _integer(field, number):
+    """Encode a protobuf varint field with its wire-type-zero tag."""
     return _varint(field << 3) + _varint(number)
 
 
 def _bytes(field, value):
+    """Encode a length-delimited protobuf field, converting text to UTF-8."""
     if isinstance(value, str):
         value = value.encode()
     return _varint((field << 3) | 2) + _varint(len(value)) + value
@@ -125,6 +135,7 @@ def _fields(data):
     offset = 0
 
     def integer():
+        """Consume at most ten varint bytes and reject truncated input."""
         nonlocal offset
         value = 0
         for shift in range(0, 70, 7):
@@ -154,6 +165,7 @@ def _fields(data):
 
 
 def _response(request_id):
+    """Encode a WebSocketMessage containing a matching 200/OK response."""
     response = _integer(1, request_id) + _integer(2, 200) + _bytes(3, "OK")
     return _integer(1, 2) + _bytes(3, response)
 
@@ -162,6 +174,7 @@ class FakeSignal:
     """One synthetic device's websocket server, with bounded waits and clean shutdown."""
 
     def __init__(self, directory, credentials, *, certificate_name="127.0.0.1"):
+        """Start an ephemeral loopback TLS listener with synthetic device credentials."""
         self.ca_path, certificate, key = create_tls_material(directory, certificate_name)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -181,7 +194,10 @@ class FakeSignal:
         fixture = self
 
         class Handler(socketserver.BaseRequestHandler):
+            """Handle one TLS peer and record only redacted protocol failures."""
+
             def handle(self):
+                """Bound the TLS handshake, verify the upgrade, then collect client ACKs."""
                 connection = None
                 try:
                     self.request.settimeout(5)
@@ -189,7 +205,11 @@ class FakeSignal:
                     fixture._connections.append(connection)
                     try:
                         connection.do_handshake()
-                    except ssl.SSLError:
+                    except ssl.SSLError as error:
+                        _require(error.reason in {
+                            "TLSV1_ALERT_UNKNOWN_CA", "SSLV3_ALERT_BAD_CERTIFICATE",
+                            "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
+                        }, "TLS handshake failed without a certificate rejection alert")
                         fixture._tls_failures.put("client rejected synthetic TLS certificate")
                         return
                     connection.settimeout(30)
@@ -211,6 +231,8 @@ class FakeSignal:
                         connection.close()
 
         class Server(socketserver.ThreadingTCPServer):
+            """Keep fixture connection threads from delaying interpreter shutdown."""
+
             daemon_threads = True
             allow_reuse_address = True
 
@@ -222,6 +244,7 @@ class FakeSignal:
         self.thread.start()
 
     def _handshake(self, stream, connection):
+        """Validate the path, credentials and RFC6455 upgrade within 8192 header bytes."""
         request = stream.readline(8193)
         _require(request == b"GET /v1/websocket/ HTTP/1.1\r\n", "unexpected websocket request target")
         headers, length = {}, len(request)
@@ -250,12 +273,14 @@ class FakeSignal:
 
     @staticmethod
     def _read_exact(stream, length):
+        """Read a complete frame component or fail if the peer closes early."""
         value = stream.read(length)
         if len(value) != length:
             raise EOFError
         return value
 
     def _read_frames(self, stream, connection):
+        """Read masked frames up to 64 KiB, answer keepalives and retain protobuf ACKs."""
         while not self._stopping.is_set():
             first, second = self._read_exact(stream, 2)
             _require(first & 0xF0 == 0x80 and second & 0x80, "invalid or unmasked client websocket frame")
@@ -288,6 +313,7 @@ class FakeSignal:
                 self._acks.put(_fields(message.get(3, b"")))
 
     def _send_frame(self, connection, payload, opcode=2):
+        """Serialize unmasked server frames under a lock to prevent interleaved writes."""
         length = len(payload)
         if length < 126:
             header = bytes([0x80 | opcode, length])
@@ -299,6 +325,7 @@ class FakeSignal:
             connection.sendall(header + payload)
 
     def _take(self, source, timeout, label):
+        """Wait for a fixture observation, surfacing a recorded failure on timeout."""
         try:
             return source.get(timeout=timeout)
         except queue.Empty as error:
@@ -309,13 +336,16 @@ class FakeSignal:
             raise FakeSignalError(failure) from error
 
     def wait_connected(self, timeout=10):
+        """Require an authenticated TLS websocket upgrade within the time bound."""
         self._take(self._connected, timeout, "synthetic Signal websocket did not connect")
 
     def wait_tls_rejection(self, timeout=10):
+        """Require a certificate rejection alert without any completed websocket upgrade."""
         self._take(self._tls_failures, timeout, "expected TLS rejection was not observed")
         _require(self.connection_count == 0, "untrusted TLS connection reached websocket upgrade")
 
     def send_envelope(self, envelope, *, request_id=None, path="/api/v1/message", verb="PUT"):
+        """Send arbitrary envelope bytes in a binary request and return its uint64 ID."""
         _require(self._connection is not None, "send requires a connected synthetic websocket")
         if request_id is None:
             self._serial += 1
@@ -325,6 +355,7 @@ class FakeSignal:
         return request_id
 
     def wait_ack(self, request_id, timeout=5):
+        """Require the matching 200/OK ACK by a deadline, retaining other request IDs."""
         deadline = time.monotonic() + timeout
         while request_id not in self._pending_acks:
             response = self._take(self._acks, max(0, deadline - time.monotonic()),
@@ -336,6 +367,7 @@ class FakeSignal:
         return response
 
     def close(self):
+        """Stop accepting peers and close active sockets to release blocked readers."""
         self._stopping.set()
         self.server.shutdown()
         for connection in self._connections:
@@ -348,7 +380,9 @@ class FakeSignal:
         self.thread.join(timeout=2)
 
     def __enter__(self):
+        """Expose the running fixture to a context-managed test."""
         return self
 
     def __exit__(self, *_):
+        """Close the fixture even when an integration assertion fails."""
         self.close()
