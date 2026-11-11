@@ -54,8 +54,8 @@ fn test_uuid(uuid: &str) {
 
 async fn test_endpoint(endpoint: &str) {
     if config::is_endpoint_valid(endpoint).await {
-        println!("Endpoint {} is valid", endpoint);
+        println!("endpoint_valid");
     } else {
-        println!("Endpoint {} is not valid", endpoint);
+        println!("invalid_endpoint");
     }
 }

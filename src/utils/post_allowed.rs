@@ -82,16 +82,6 @@ impl Payload {
     }
 }
 
-/// Temporary shim so this layer compiles on its own. The next PR in this stack
-/// moves `ws::signalwebsocket` to the encrypted sender and removes this function.
-pub async fn post_allowed(
-    url: Url,
-    _body: &serde_json::Value,
-    _topic: Option<&str>,
-) -> Result<reqwest::Response> {
-    post_legacy_wake(url).await
-}
-
 /// A provider response is never proof of device delivery.
 pub async fn post_encrypted(url: Url, body: Vec<u8>, ttl: u32) -> Result<reqwest::Response> {
     let payload = Payload::Encrypted(body);
