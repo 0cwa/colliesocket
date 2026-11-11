@@ -4,6 +4,15 @@ ChatGPT prepared this architecture record from the user's product direction on
 2026-11-11. It is a reviewable design record, not a native-app implementation or
 a change to the frozen encrypted-push/v1 contract.
 
+## Framework decision update
+
+The user selected **Tauri 2** on 2026-11-11. The current framework and native
+boundary are recorded in [Tauri host decision](tauri-host-v1.md) and
+[product-direction v2](../../handoff/product-direction-v2.json). The initial
+Android OS floor for this choice is Android 7 / API 24; actual device, ABI and
+WebView acceptance remains unverified. The framework comparison below records
+the earlier assessment and is superseded by that explicit choice.
+
 ## Product direction
 
 The primary product should be an installable GUI application that can run a
