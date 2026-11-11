@@ -1,0 +1,507 @@
+{
+  "synthetic_only": true,
+  "validation_time": 1735689600,
+  "cases": [
+    {
+      "name": "enrollment-valid",
+      "path": "enrollment-valid.json",
+      "schema": "enrollment",
+      "valid": true
+    },
+    {
+      "name": "enrollment-invalid-missing-auth",
+      "path": "enrollment-invalid-missing-auth.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-short-auth",
+      "path": "enrollment-invalid-short-auth.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-padded-auth",
+      "path": "enrollment-invalid-padded-auth.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-noncanonical-auth",
+      "path": "enrollment-invalid-noncanonical-auth.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-offcurve",
+      "path": "enrollment-invalid-offcurve.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-bad-point-prefix",
+      "path": "enrollment-invalid-bad-point-prefix.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-noncanonical-key",
+      "path": "enrollment-invalid-noncanonical-key.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-downgrade",
+      "path": "enrollment-invalid-downgrade.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-unsupported-version",
+      "path": "enrollment-invalid-unsupported-version.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-version-float",
+      "path": "enrollment-invalid-version-float.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-missing-capability",
+      "path": "enrollment-invalid-missing-capability.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-reordered-capabilities",
+      "path": "enrollment-invalid-reordered-capabilities.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-epoch-zero",
+      "path": "enrollment-invalid-epoch-zero.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-epoch-too-large",
+      "path": "enrollment-invalid-epoch-too-large.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-epoch-bool",
+      "path": "enrollment-invalid-epoch-bool.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-bad-instance",
+      "path": "enrollment-invalid-bad-instance.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-instance-newline",
+      "path": "enrollment-invalid-instance-newline.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-uuid-newline",
+      "path": "enrollment-invalid-uuid-newline.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-password-newline",
+      "path": "enrollment-invalid-password-newline.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-password-control",
+      "path": "enrollment-invalid-password-control.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-device-one",
+      "path": "enrollment-invalid-device-one.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-unknown",
+      "path": "enrollment-invalid-unknown.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-endpoint-userinfo",
+      "path": "enrollment-invalid-endpoint-userinfo.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-endpoint-empty-userinfo",
+      "path": "enrollment-invalid-endpoint-empty-userinfo.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-endpoint-fragment",
+      "path": "enrollment-invalid-endpoint-fragment.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-endpoint-empty-fragment",
+      "path": "enrollment-invalid-endpoint-empty-fragment.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-endpoint-backslash",
+      "path": "enrollment-invalid-endpoint-backslash.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-endpoint-port-zero",
+      "path": "enrollment-invalid-endpoint-port-zero.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-endpoint-space",
+      "path": "enrollment-invalid-endpoint-space.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-endpoint-scheme",
+      "path": "enrollment-invalid-endpoint-scheme.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-endpoint-port-range",
+      "path": "enrollment-invalid-endpoint-port-range.json",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-utf16",
+      "path": "enrollment-invalid-utf16.bin",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-utf8",
+      "path": "enrollment-invalid-utf8.bin",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-invalid-bom",
+      "path": "enrollment-invalid-bom.bin",
+      "schema": "enrollment",
+      "valid": false
+    },
+    {
+      "name": "enrollment-http-explicit",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": true,
+      "allowed_endpoints": [
+        "http://127.0.0.1:18080"
+      ]
+    },
+    {
+      "name": "http-no-allowance",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": []
+    },
+    {
+      "name": "http-wildcard",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": [
+        "*"
+      ]
+    },
+    {
+      "name": "http-wrong-port",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": [
+        "http://127.0.0.1:18081"
+      ]
+    },
+    {
+      "name": "http-wrong-scheme",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": [
+        "https://127.0.0.1:18080"
+      ]
+    },
+    {
+      "name": "event-valid-wake",
+      "path": "event-valid-wake.json",
+      "schema": "event",
+      "valid": true
+    },
+    {
+      "name": "event-valid-test",
+      "path": "event-valid-test.json",
+      "schema": "event",
+      "valid": true
+    },
+    {
+      "name": "event-valid-status-connection_conflict",
+      "path": "event-valid-status-connection_conflict.json",
+      "schema": "event",
+      "valid": true
+    },
+    {
+      "name": "event-valid-status-connection_unavailable",
+      "path": "event-valid-status-connection_unavailable.json",
+      "schema": "event",
+      "valid": true
+    },
+    {
+      "name": "event-invalid-expired",
+      "path": "event-invalid-expired.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-future",
+      "path": "event-invalid-future.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-long-life",
+      "path": "event-invalid-long-life.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-version",
+      "path": "event-invalid-version.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-rich-content",
+      "path": "event-invalid-rich-content.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-unknown-kind",
+      "path": "event-invalid-unknown-kind.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-code-on-wake",
+      "path": "event-invalid-code-on-wake.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-null-code",
+      "path": "event-invalid-null-code.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-epoch-zero",
+      "path": "event-invalid-epoch-zero.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-float-time",
+      "path": "event-invalid-float-time.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-bool-time",
+      "path": "event-invalid-bool-time.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-id-newline",
+      "path": "event-invalid-id-newline.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-instance-newline",
+      "path": "event-invalid-instance-newline.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-status-no-code",
+      "path": "event-invalid-status-no-code.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-status-unknown",
+      "path": "event-invalid-status-unknown.json",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-duplicate",
+      "path": "event-invalid-duplicate.bin",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-invalid-trailing",
+      "path": "event-invalid-trailing.bin",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "event-valid-padded",
+      "path": "event-valid-padded.bin",
+      "schema": "event",
+      "valid": true
+    },
+    {
+      "name": "event-invalid-oversize",
+      "path": "event-invalid-oversize.bin",
+      "schema": "event",
+      "valid": false
+    },
+    {
+      "name": "response-valid",
+      "path": "response-valid.json",
+      "schema": "response",
+      "valid": true
+    },
+    {
+      "name": "response-valid-unchanged",
+      "path": "response-valid-unchanged.json",
+      "schema": "response",
+      "valid": true
+    },
+    {
+      "name": "response-invalid-unknown",
+      "path": "response-invalid-unknown.json",
+      "schema": "response",
+      "valid": false
+    },
+    {
+      "name": "response-invalid-null",
+      "path": "response-invalid-null.json",
+      "schema": "response",
+      "valid": false
+    },
+    {
+      "name": "http-allowance-path",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": [
+        "http://127.0.0.1:18080/private"
+      ]
+    },
+    {
+      "name": "http-allowance-query",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": [
+        "http://127.0.0.1:18080/?key=synthetic"
+      ]
+    },
+    {
+      "name": "http-allowance-empty-query",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": [
+        "http://127.0.0.1:18080?"
+      ]
+    },
+    {
+      "name": "http-allowance-root-path",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": true,
+      "allowed_endpoints": [
+        "http://127.0.0.1:18080/"
+      ]
+    },
+    {
+      "name": "http-allowance-mixed-invalid-valid",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": true,
+      "allowed_endpoints": [
+        "http://127.0.0.1:18080/private",
+        "http://@127.0.0.1:18080",
+        "http://127.0.0.1:0",
+        "not-an-origin",
+        "http://127.0.0.1:18080?",
+        "http://127.0.0.1:18080/"
+      ]
+    },
+    {
+      "name": "http-allowance-backslash",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": [
+        "http://127.0.0.1:18080\\"
+      ]
+    },
+    {
+      "name": "http-allowance-empty-userinfo",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": [
+        "http://@127.0.0.1:18080"
+      ]
+    },
+    {
+      "name": "http-allowance-fragment",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": [
+        "http://127.0.0.1:18080#"
+      ]
+    },
+    {
+      "name": "http-allowance-control",
+      "path": "enrollment-http-explicit.json",
+      "schema": "enrollment",
+      "valid": false,
+      "allowed_endpoints": [
+        "http://127.0.0.1:18080\n"
+      ]
+    }
+  ]
+}
