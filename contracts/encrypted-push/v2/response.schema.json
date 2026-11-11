@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cwa/colliesocket/contracts/encrypted-push/v2/response.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "enrollment_version",
+    "request_id",
+    "instance",
+    "subscription_epoch",
+    "selected_event_version",
+    "capabilities",
+    "status"
+  ],
+  "properties": {
+    "enrollment_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?![\\s\\S])",
+      "minLength": 36,
+      "maxLength": 36
+    },
+    "instance": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9._:-]{1,128})(?![\\s\\S])",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "subscription_epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "selected_event_version": {
+      "type": "integer",
+      "enum": [
+        1,
+        2
+      ]
+    },
+    "capabilities": {
+      "type": "array",
+      "const": [
+        "wake",
+        "test",
+        "status"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "unchanged"
+      ]
+    }
+  }
+}

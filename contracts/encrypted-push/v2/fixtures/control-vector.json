@@ -1,0 +1,16 @@
+{
+  "synthetic_only": true,
+  "algorithm": "AES-256-GCM",
+  "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "device_id": 2,
+  "target_epoch": 2,
+  "control_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "nonce_hex": "000102030405060708090a0b",
+  "aad_hex": "436f6c6c6965536f636b65742d436f6e74726f6c00020000000000000002aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa00000002",
+  "plaintext_utf8": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\"}",
+  "ciphertext_hex": "3c20b375a195ad72e335b5b193810c19f3a5bd1bdf0b2a0f504980fd7c0470de643eda99dcb53df611d35dc1aaf71a0dd83d08af60f4e19245ee4f6171adb4dec911af169ae567164f65ed1dbfce67bf56e3ad3d3f011d09a4b1cd9c00b8e3fda7cc1bd5c0178d54eb530ef709057125c8200c98b2b217ad3dc625a8dbde5857f2226ea1e7e4a50042d52b9878f860e05781975d172bb10fce1abb328283bfa8fbf4c752bb90ae36e553b8b2a8a2fb",
+  "tag_hex": "29666a16c914415843a58fcdfdf161d5",
+  "blob_base64url": "Q29sbGllU29ja2V0LUNvbnRyb2wAAgAAAAAAAAACAAECAwQFBgcICQoLPCCzdaGVrXLjNbWxk4EMGfOlvRvfCyoPUEmA_XwEcN5kPtqZ3LU99hHTXcGq9xoN2D0Ir2D04ZJF7k9hca203skRrxaa5WcWT2XtHb_OZ79W4609PwEdCaSxzZwAuOP9p8wb1cAXjVTrUw73CQVxJcggDJiyshetPcYlqNveWFfyIm6h5-SlAELVK5h4-GDgV4GXXRcrsQ_OGrsygoO_qPv0x1K7kK425VO4sqii-ylmahbJFEFYQ6WPzf3xYdU",
+  "blob_file": "control-update.bin",
+  "plaintext_file": "control-update.json"
+}

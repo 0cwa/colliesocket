@@ -1,0 +1,254 @@
+{
+  "synthetic_only": true,
+  "cases": [
+    {
+      "name": "keyed enrollment",
+      "schema": "enrollment",
+      "valid": true,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"wake\",\"test\",\"status\"]},\"control_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}"
+    },
+    {
+      "name": "keyless enrollment",
+      "schema": "enrollment",
+      "valid": true,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[1],\"capabilities\":[\"wake\",\"test\",\"status\"]}}"
+    },
+    {
+      "name": "endpoint update",
+      "schema": "control",
+      "valid": true,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\"}"
+    },
+    {
+      "name": "update confirmation",
+      "schema": "event",
+      "valid": true,
+      "json": "{\"version\":2,\"event_id\":\"10000000-0000-4000-8000-000000000002\",\"instance\":\"fixture-instance\",\"subscription_epoch\":2,\"kind\":\"status\",\"code\":\"subscription_updated\",\"issued_at\":1700000000,\"expires_at\":1700000300}"
+    },
+    {
+      "name": "keyed receipt",
+      "schema": "response",
+      "valid": true,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"selected_event_version\":2,\"capabilities\":[\"wake\",\"test\",\"status\"],\"status\":\"accepted\"}"
+    },
+    {
+      "name": "keyless receipt",
+      "schema": "response",
+      "valid": true,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"selected_event_version\":1,\"capabilities\":[\"wake\",\"test\",\"status\"],\"status\":\"accepted\"}"
+    },
+    {
+      "name": "null key",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"wake\",\"test\",\"status\"]},\"control_key\":null}"
+    },
+    {
+      "name": "short key",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"wake\",\"test\",\"status\"]},\"control_key\":\"AA\"}"
+    },
+    {
+      "name": "padded key",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"wake\",\"test\",\"status\"]},\"control_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\"}"
+    },
+    {
+      "name": "noncanonical key",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"wake\",\"test\",\"status\"]},\"control_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh9\"}"
+    },
+    {
+      "name": "wrong keyed negotiation",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[1],\"capabilities\":[\"wake\",\"test\",\"status\"]},\"control_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}"
+    },
+    {
+      "name": "float version",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":2.0,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"wake\",\"test\",\"status\"]},\"control_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}"
+    },
+    {
+      "name": "wrong version",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":1,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"wake\",\"test\",\"status\"]},\"control_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}"
+    },
+    {
+      "name": "wrong capability order",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"test\",\"wake\",\"status\"]},\"control_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}"
+    },
+    {
+      "name": "bad epoch",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":0,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"wake\",\"test\",\"status\"]},\"control_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"}"
+    },
+    {
+      "name": "keyless v2 negotiation",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"wake\",\"test\",\"status\"]}}"
+    },
+    {
+      "name": "forbidden control password",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\",\"password\":\"forbidden\"}"
+    },
+    {
+      "name": "forbidden control control_key",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\",\"control_key\":\"forbidden\"}"
+    },
+    {
+      "name": "forbidden control account_id",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\",\"account_id\":\"forbidden\"}"
+    },
+    {
+      "name": "forbidden control device_id",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\",\"device_id\":\"forbidden\"}"
+    },
+    {
+      "name": "forbidden control instance",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\",\"instance\":\"forbidden\"}"
+    },
+    {
+      "name": "forbidden control subscription_epoch",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\",\"subscription_epoch\":\"forbidden\"}"
+    },
+    {
+      "name": "forbidden control encryption_required",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\",\"encryption_required\":\"forbidden\"}"
+    },
+    {
+      "name": "control auth length",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"AA\"}"
+    },
+    {
+      "name": "control noncanonical auth",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHx\"}"
+    },
+    {
+      "name": "control padded key",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E=\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\"}"
+    },
+    {
+      "name": "control invalid point",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\"}"
+    },
+    {
+      "name": "control fragment",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new#\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\"}"
+    },
+    {
+      "name": "control userinfo",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://user@push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\"}"
+    },
+    {
+      "name": "control HTTP default",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"http://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\"}"
+    },
+    {
+      "name": "control explicit HTTP origin",
+      "schema": "control",
+      "valid": true,
+      "json": "{\"endpoint\":\"http://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\"}",
+      "allowed_endpoints": [
+        "http://push.example.test"
+      ]
+    },
+    {
+      "name": "old event version",
+      "schema": "event",
+      "valid": false,
+      "json": "{\"version\":1,\"event_id\":\"10000000-0000-4000-8000-000000000002\",\"instance\":\"fixture-instance\",\"subscription_epoch\":2,\"kind\":\"status\",\"code\":\"subscription_updated\",\"issued_at\":1700000000,\"expires_at\":1700000300}"
+    },
+    {
+      "name": "unknown status code",
+      "schema": "event",
+      "valid": false,
+      "json": "{\"version\":2,\"event_id\":\"10000000-0000-4000-8000-000000000002\",\"instance\":\"fixture-instance\",\"subscription_epoch\":2,\"kind\":\"status\",\"code\":\"endpoint_updated\",\"issued_at\":1700000000,\"expires_at\":1700000300}"
+    },
+    {
+      "name": "float issued time",
+      "schema": "event",
+      "valid": false,
+      "json": "{\"version\":2,\"event_id\":\"10000000-0000-4000-8000-000000000002\",\"instance\":\"fixture-instance\",\"subscription_epoch\":2,\"kind\":\"status\",\"code\":\"subscription_updated\",\"issued_at\":1700000000.0,\"expires_at\":1700000300}"
+    },
+    {
+      "name": "expired status",
+      "schema": "event",
+      "valid": false,
+      "json": "{\"version\":2,\"event_id\":\"10000000-0000-4000-8000-000000000002\",\"instance\":\"fixture-instance\",\"subscription_epoch\":2,\"kind\":\"status\",\"code\":\"subscription_updated\",\"issued_at\":1700000000,\"expires_at\":1700000000}"
+    },
+    {
+      "name": "future status",
+      "schema": "event",
+      "valid": false,
+      "json": "{\"version\":2,\"event_id\":\"10000000-0000-4000-8000-000000000002\",\"instance\":\"fixture-instance\",\"subscription_epoch\":2,\"kind\":\"status\",\"code\":\"subscription_updated\",\"issued_at\":1700000061,\"expires_at\":1700000300}"
+    },
+    {
+      "name": "excess lifetime",
+      "schema": "event",
+      "valid": false,
+      "json": "{\"version\":2,\"event_id\":\"10000000-0000-4000-8000-000000000002\",\"instance\":\"fixture-instance\",\"subscription_epoch\":2,\"kind\":\"status\",\"code\":\"subscription_updated\",\"issued_at\":1700000000,\"expires_at\":1700000301}"
+    },
+    {
+      "name": "status needs code",
+      "schema": "event",
+      "valid": false,
+      "json": "{\"version\":2,\"event_id\":\"10000000-0000-4000-8000-000000000002\",\"instance\":\"fixture-instance\",\"subscription_epoch\":2,\"kind\":\"status\",\"issued_at\":1700000000,\"expires_at\":1700000300}"
+    },
+    {
+      "name": "enrollment duplicate field",
+      "schema": "enrollment",
+      "valid": false,
+      "json": "{\"enrollment_version\":2,\"request_id\":\"22222222-2222-4222-8222-222222222222\",\"account_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"device_id\":2,\"password\":\"SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL\",\"subscription\":{\"endpoint\":\"https://push.example.invalid/synthetic-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\",\"auth\":\"BTBZMqHH6r4Tts7J_aSIgg\",\"instance\":\"fixture-instance\",\"subscription_epoch\":1,\"encryption_required\":true,\"supported_event_versions\":[2],\"capabilities\":[\"wake\",\"test\",\"status\"]},\"control_key\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"enrollment_version\":null}"
+    },
+    {
+      "name": "control duplicate field",
+      "schema": "control",
+      "valid": false,
+      "json": "{\"endpoint\":\"https://push.example.test/new\",\"p256dh\":\"BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E\",\"auth\":\"EBESExQVFhcYGRobHB0eHw\",\"endpoint\":null}"
+    },
+    {
+      "name": "event duplicate field",
+      "schema": "event",
+      "valid": false,
+      "json": "{\"version\":2,\"event_id\":\"10000000-0000-4000-8000-000000000002\",\"instance\":\"fixture-instance\",\"subscription_epoch\":2,\"kind\":\"status\",\"code\":\"subscription_updated\",\"issued_at\":1700000000,\"expires_at\":1700000300,\"version\":null}"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "endpoint": "https://push.example.test/new",
+  "p256dh": "BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E",
+  "auth": "EBESExQVFhcYGRobHB0eHw"
+}
