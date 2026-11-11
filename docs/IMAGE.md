@@ -165,8 +165,12 @@ automatic database rollback mechanism.
 The original C0 `contract` job remains intact. Added `server` and `image` jobs
 run on work-branch pushes, pull requests and manual workflow dispatches. The
 server job checks formatting, locked unit tests, public image pins and the real
-synthetic CLI/loopback-provider test with independent decryption. The image jobs
-build and smoke-test both architectures, then retain local archives and redacted
+synthetic CLI/loopback-provider test with independent decryption. A separate
+`signal` job exercises the fake TLS Signal websocket through an encrypted push
+and checks that a release built with all features and debug assertions contains
+no test URL or CA override. The default server build also checks that overrides
+are absent. The image jobs wait for both server and Signal checks, build and
+smoke-test both architectures, and retain local archives and redacted
 results for one day. They have read-only repository permissions, no registry
 login/push, no secrets, and no release/deployment step.
 
