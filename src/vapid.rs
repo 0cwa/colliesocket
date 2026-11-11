@@ -95,6 +95,11 @@ fn get_vapid_header_from_cache(origin: &url::Origin) -> Option<String> {
 
 fn add_vapid_header_to_cache(origin_str: &str, header: &str) {
     let mut cache = VAPID_CACHE.lock().unwrap();
+    let now = Instant::now();
+    cache.retain(|_, entry| entry.expire > now);
+    if cache.len() >= 4096 {
+        cache.clear();
+    }
     cache.insert(
         origin_str.into(),
         VapidCache {
@@ -109,7 +114,7 @@ fn gen_vapid_header_with_key(origin: url::Origin, key: &SignerWithPubKey) -> Res
     let claims = Claims::create(jwt_simple::prelude::Duration::from_secs(DURATION_VAPID))
         .with_audience(&origin_str)
         .with_subject("https://github.com/mollyim/mollysocket");
-    let token = key.signer.sign(claims).unwrap();
+    let token = key.signer.sign(claims).map_err(|_| Error::VapidKeyError)?;
 
     let header = format!("vapid t={},k={}", token.as_str(), &key.pubkey);
     add_vapid_header_to_cache(&origin_str, &header);
@@ -130,7 +135,9 @@ fn get_signer_from_conf() -> Result<SignerWithPubKey> {
 Get [SignerWithPubKey] from the private key.
 */
 fn get_signer(private_bytes: &str) -> Result<SignerWithPubKey> {
-    let private_key_bytes = URL_SAFE_NO_PAD.decode(private_bytes).unwrap();
+    let private_key_bytes = URL_SAFE_NO_PAD
+        .decode(private_bytes)
+        .map_err(|_| Error::VapidKeyError)?;
     let size = private_key_bytes.len();
     if size != 32 {
         if size == 0 {
@@ -143,10 +150,9 @@ fn get_signer(private_bytes: &str) -> Result<SignerWithPubKey> {
         }
         return Err(eyre!(Error::VapidKeyError));
     }
-    let kp = ES256KeyPair::from_bytes(&private_key_bytes).unwrap();
+    let kp = ES256KeyPair::from_bytes(&private_key_bytes).map_err(|_| Error::VapidKeyError)?;
     let pubkey = URL_SAFE_NO_PAD.encode(kp.public_key().public_key().to_bytes_uncompressed());
 
-    log::info!("VAPID public key: {:?}", pubkey);
     Ok(SignerWithPubKey { signer: kp, pubkey })
 }
 

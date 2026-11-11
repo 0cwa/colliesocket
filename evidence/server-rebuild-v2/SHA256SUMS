@@ -1,0 +1,10 @@
+0640463aa7bfe190eb486ffbe2b679d01a3b4d92f09a20dd36f593a0d3076c4b  evidence/server-rebuild-v2/01-format.log
+2f54b5d4278a91181ccc26b4d5567abb84bb82867532023e15681bc87bcca30b  evidence/server-rebuild-v2/02-format-check.log
+a977e7e753794d45b5b68bb97f7efee53cbdc2eb40b9dec624c760a77fd30f92  evidence/server-rebuild-v2/03-cargo-test.log
+741d0fb81d0c516b1b7d41d02d7a6ce808e1bc22211a1b03efa1276078776db7  evidence/server-rebuild-v2/04-release-build.log
+d07db921367a8660b3e65c2b8b7fdb08b8410f326f0bc3ad3414350bc07aaf91  evidence/server-rebuild-v2/05-release-cli.log
+68408752bce092ec3007b27a623c6e348a80db832035641147b6c224334603da  evidence/server-rebuild-v2/README.md
+a5b040e9f9bc17696c1cb03d71eb60ec9218070f0f92ffabaeed6d5bef393a82  evidence/server-rebuild-v2/cli-release.json
+779832564c8dbb0efd4517b14c486acb14c8ace55196ebeaeebf08929971e4d7  evidence/server-rebuild-v2/results.json
+676fd83fae88af0b04603c13fddc5b55b13f03cfe17c314006141ce913e8464a  evidence/server-rebuild-v2/source-inputs.json
+90bb305f006985179b9afe31f6da59415bd9940736186adff895c1c2d3d21abc  evidence/server-rebuild-v2/tool-versions.json
