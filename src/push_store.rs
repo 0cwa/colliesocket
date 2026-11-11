@@ -14,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashSet, fmt, fs, path::Path, time::Duration};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const MAX_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_EVENT_BYTES: usize = 3072;
 pub const MAX_ACCOUNTS: usize = 4096;
@@ -96,6 +96,12 @@ pub struct Enrollment {
     pub account_id: String,
     pub device_id: u32,
     pub password: String,
+    #[serde(
+        default,
+        deserialize_with = "present_control_key",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub control_key: Option<String>,
     pub subscription: Subscription,
 }
 
@@ -132,6 +138,14 @@ pub struct Event {
 
 fn present_code<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<String>, D::Error> {
     // An omitted field is permitted, but an explicit JSON null is not a code.
+    String::deserialize(d).map(Some)
+}
+
+fn present_control_key<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    // Omission preserves the frozen v1 shape and its historical request digest.
+    // Explicit null must not silently remove control authority.
     String::deserialize(d).map(Some)
 }
 
@@ -179,13 +193,19 @@ fn key_bytes(value: &str, len: usize) -> Result<Vec<u8>> {
 }
 
 impl Subscription {
+    pub fn event_version(&self) -> Result<u32> {
+        match self.supported_event_versions.as_slice() {
+            [1] => Ok(1),
+            [2] => Ok(2),
+            _ => Err(StoreError::UnsupportedVersion),
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         if !self.encryption_required {
             return Err(StoreError::EncryptionRequired);
         }
-        if self.supported_event_versions != [1] {
-            return Err(StoreError::UnsupportedVersion);
-        }
+        self.event_version()?;
         if self.capabilities != ["wake", "test", "status"] {
             return Err(StoreError::CapabilityRequired);
         }
@@ -240,7 +260,19 @@ impl Subscription {
 
 impl Enrollment {
     pub fn validate(&self) -> Result<()> {
-        if self.enrollment_version != 1 {
+        if !matches!(self.enrollment_version, 1 | 2) {
+            return Err(StoreError::UnsupportedVersion);
+        }
+        let event_version = match (&self.control_key, self.enrollment_version) {
+            (Some(_), 1) => return Err(StoreError::InvalidEnrollment),
+            (Some(key), 2) => {
+                key_bytes(key, 32)?;
+                2
+            }
+            (None, _) => 1,
+            _ => return Err(StoreError::UnsupportedVersion),
+        };
+        if self.subscription.supported_event_versions != [event_version] {
             return Err(StoreError::UnsupportedVersion);
         }
         if !canonical_uuid(&self.request_id, true)
@@ -258,7 +290,7 @@ impl Enrollment {
 impl Event {
     pub fn validate(&self, now: i64) -> Result<()> {
         let time_ok = |v: i64| v >= 0 && (v as u64) <= MAX_JSON_INTEGER;
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || !canonical_uuid(&self.event_id, true)
             || !valid_instance(&self.instance)
             || !valid_epoch(self.subscription_epoch)
@@ -274,6 +306,7 @@ impl Event {
         match (self.kind.as_str(), self.code.as_deref()) {
             ("wake" | "test", None)
             | ("status", Some("connection_conflict" | "connection_unavailable")) => (),
+            ("status", Some("subscription_updated")) if self.version == 2 => (),
             _ => return Err(StoreError::InvalidEvent),
         }
         if serde_json::to_vec(self)?.len() > MAX_EVENT_BYTES {
@@ -373,6 +406,20 @@ pub struct PushStore {
     db: Connection,
 }
 
+/// Private-import authority captured before asynchronous endpoint validation.
+/// The transaction rechecks this generation and the exact connection tuple.
+pub(crate) struct ControlSnapshot {
+    pub(crate) account_id: String,
+    pub(crate) device_id: u32,
+    password: String,
+    endpoint: String,
+    generation: String,
+    pub(crate) key: [u8; 32],
+    pub(crate) subscription: Subscription,
+    pub(crate) last_blob_digest: Option<String>,
+}
+redacted_debug!(ControlSnapshot);
+
 fn digest<T: Serialize>(value: &T) -> Result<String> {
     fn sort_objects(value: &mut serde_json::Value) {
         match value {
@@ -454,17 +501,18 @@ impl PushStore {
         if count >= MAX_REQUESTS_PER_ACCOUNT {
             return Err(StoreError::CapacityExceeded);
         }
-        let existing: Option<(String, String, u32, String)> = tx.query_row(
-            "SELECT subscription_json,state,connection_device_id,connection_password FROM encrypted_subscriptions WHERE account_id=?1",
-            [&enrollment.account_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        let existing: Option<(String, String, u32, String, Option<String>)> = tx.query_row(
+            "SELECT s.subscription_json,s.state,s.connection_device_id,s.connection_password,c.control_key FROM encrypted_subscriptions s LEFT JOIN encrypted_control_state c ON c.account_id=s.account_id WHERE s.account_id=?1",
+            [&enrollment.account_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
         let disposition;
         let mut changed_credentials = false;
-        if let Some((json, state, device, password)) = existing {
+        if let Some((json, state, device, password, control_key)) = existing {
             let old: Subscription = serde_json::from_str(&json)?;
             changed_credentials = device != enrollment.device_id || password != enrollment.password;
             if enrollment.subscription.subscription_epoch == old.subscription_epoch
                 && old == enrollment.subscription
                 && !changed_credentials
+                && control_key == enrollment.control_key
                 && state == "active"
             {
                 disposition = EnrollmentDisposition::Unchanged;
@@ -517,6 +565,19 @@ impl PushStore {
                     [&enrollment.account_id],
                 )?;
             }
+            // Only private imports establish or replace control authority. A
+            // fresh generation also revokes an obsolete socket when an import
+            // keeps the same Signal credentials and endpoint.
+            tx.execute(
+                "DELETE FROM encrypted_control_state WHERE account_id=?1",
+                [&enrollment.account_id],
+            )?;
+            if let Some(key) = &enrollment.control_key {
+                tx.execute(
+                    "INSERT INTO encrypted_control_state(account_id,control_key,generation) VALUES(?1,?2,?3)",
+                    params![enrollment.account_id, key, token()?],
+                )?;
+            }
         }
         tx.execute("INSERT INTO encrypted_enrollment_requests(account_id,request_id,request_digest,subscription_epoch,disposition,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
             params![enrollment.account_id,enrollment.request_id,hash,enrollment.subscription.subscription_epoch as i64,disposition.as_str(),now])?;
@@ -540,6 +601,125 @@ impl PushStore {
         value
             .map(|s| serde_json::from_str(&s).map_err(StoreError::from))
             .transpose()
+    }
+
+    pub(crate) fn control_generation_for_connection(
+        &self,
+        connection: &crate::db::Connection,
+    ) -> Result<Option<String>> {
+        Ok(self.db.query_row(
+            "SELECT a.generation FROM encrypted_control_state a JOIN connections c ON c.uuid=a.account_id WHERE c.uuid=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0",
+            params![connection.uuid, connection.device_id, connection.password, connection.endpoint],
+            |r| r.get(0),
+        ).optional()?)
+    }
+
+    pub(crate) fn control_snapshot_for_connection(
+        &self,
+        connection: &crate::db::Connection,
+        generation: &str,
+    ) -> Result<Option<ControlSnapshot>> {
+        let row: Option<(String, String, Option<String>)> = self.db.query_row(
+            "SELECT a.control_key,s.subscription_json,a.last_blob_digest FROM encrypted_control_state a JOIN encrypted_subscriptions s ON s.account_id=a.account_id JOIN connections c ON c.uuid=a.account_id WHERE c.uuid=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND a.generation=?5",
+            params![connection.uuid, connection.device_id, connection.password, connection.endpoint, generation],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+        ).optional()?;
+        row.map(|(key, json, last_blob_digest)| {
+            let subscription: Subscription = serde_json::from_str(&json)?;
+            if subscription.event_version()? != 2 {
+                return Err(StoreError::StateUnavailable);
+            }
+            let key: [u8; 32] = key_bytes(&key, 32)
+                .map_err(|_| StoreError::StateUnavailable)?
+                .try_into()
+                .map_err(|_| StoreError::StateUnavailable)?;
+            Ok(ControlSnapshot {
+                account_id: connection.uuid.clone(),
+                device_id: connection.device_id,
+                password: connection.password.clone(),
+                endpoint: connection.endpoint.clone(),
+                generation: generation.to_owned(),
+                key,
+                subscription,
+                last_blob_digest,
+            })
+        })
+        .transpose()
+    }
+
+    /// The caller must authenticate before endpoint policy checks. The typed
+    /// message comes from `control::authenticate`, and this transaction rejects
+    /// intervening private imports, credential changes, or endpoint rotations.
+    pub(crate) fn apply_control(
+        &mut self,
+        snapshot: &ControlSnapshot,
+        message: &crate::control::AuthenticatedUpdate,
+        now: i64,
+    ) -> Result<crate::control::ControlResult> {
+        use crate::control::{replacement, ControlResult};
+        if now < 0 || now as u64 > MAX_JSON_INTEGER {
+            return Err(StoreError::StateUnavailable);
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: Option<(String, String, Option<String>)> = tx.query_row(
+            "SELECT s.subscription_json,s.state,a.last_blob_digest FROM encrypted_control_state a JOIN encrypted_subscriptions s ON s.account_id=a.account_id JOIN connections c ON c.uuid=a.account_id WHERE c.uuid=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND a.generation=?5 AND a.control_key=?6",
+            params![snapshot.account_id, snapshot.device_id, snapshot.password, snapshot.endpoint, snapshot.generation, URL_SAFE_NO_PAD.encode(snapshot.key)],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+        ).optional()?;
+        let Some((json, state, last_blob_digest)) = current else {
+            return Ok(ControlResult::Rejected);
+        };
+        let old: Subscription = serde_json::from_str(&json)?;
+        if old != snapshot.subscription {
+            return Ok(ControlResult::Rejected);
+        }
+        if message.epoch == old.subscription_epoch {
+            if last_blob_digest.as_deref() != Some(message.digest.as_str()) {
+                return Ok(ControlResult::Rejected);
+            }
+            if state == "active" {
+                ensure_confirmation(&tx, &snapshot.account_id, &old, now, false)?;
+            }
+            // No subscription, control digest, credentials, or state mutation.
+            tx.commit()?;
+            return Ok(ControlResult::Replayed {
+                endpoint: old.endpoint,
+            });
+        }
+        if old.subscription_epoch == MAX_JSON_INTEGER || message.epoch != old.subscription_epoch + 1
+        {
+            return Ok(ControlResult::Rejected);
+        }
+        let next = replacement(&old, message);
+        next.validate()?;
+        // Match the private shadow tuple first so the legacy-overwrite trigger
+        // allows only this exact endpoint change inside the same transaction.
+        tx.execute(
+            "UPDATE encrypted_subscriptions SET subscription_epoch=?2,subscription_json=?3,state='active',connection_endpoint=?4,updated_at=?5 WHERE account_id=?1",
+            params![snapshot.account_id, next.subscription_epoch as i64, serde_json::to_string(&next)?, next.endpoint, now],
+        )?;
+        let changed = tx.execute(
+            "UPDATE connections SET endpoint=?5 WHERE uuid=?1 AND device_id=?2 AND password=?3 AND endpoint=?4 AND forbidden=0",
+            params![snapshot.account_id, snapshot.device_id, snapshot.password, snapshot.endpoint, next.endpoint],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::StateUnavailable);
+        }
+        tx.execute(
+            "DELETE FROM encrypted_push_queue WHERE account_id=?1",
+            [&snapshot.account_id],
+        )?;
+        tx.execute(
+            "UPDATE encrypted_control_state SET last_blob_digest=?2,confirmation_event_id=NULL,confirmation_issued_at=NULL WHERE account_id=?1",
+            params![snapshot.account_id, message.digest],
+        )?;
+        ensure_confirmation(&tx, &snapshot.account_id, &next, now, true)?;
+        tx.commit()?;
+        Ok(ControlResult::Applied {
+            endpoint: next.endpoint,
+        })
     }
 
     /// Build an event from this exact snapshot, then pass it directly to
@@ -618,65 +798,35 @@ impl PushStore {
     /// Returns false for an identical previously accepted event ID. The ledger
     /// survives provider acceptance and key rotation until the event expires.
     pub fn enqueue(&mut self, account_id: &str, event: &Event, now: i64) -> Result<bool> {
-        event.validate(now)?;
-        let json = serde_json::to_string(event)?;
-        let hash = digest(&(account_id, event))?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        prune(&tx, now)?;
-        let seen: Option<String> = tx
-            .query_row(
-                "SELECT event_digest FROM encrypted_push_event_ids WHERE event_id=?1",
-                [&event.event_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(seen) = seen {
-            if seen != hash {
-                return Err(StoreError::InvalidEvent);
-            }
-            tx.commit()?;
+        let queued = enqueue_event(&tx, account_id, event, now)?;
+        tx.commit()?;
+        Ok(queued)
+    }
+
+    pub(crate) fn enqueue_for_connection(
+        &mut self,
+        connection: &crate::db::Connection,
+        expected_generation: Option<&str>,
+        event: &Event,
+        now: i64,
+    ) -> Result<bool> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM connections c WHERE c.uuid=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND (SELECT generation FROM encrypted_control_state WHERE account_id=c.uuid) IS ?5)",
+            params![connection.uuid, connection.device_id, connection.password, connection.endpoint, expected_generation],
+            |r| r.get(0),
+        )?;
+        if !current {
             return Ok(false);
         }
-        let current: Option<(String, String)> = tx
-            .query_row(
-                "SELECT subscription_json,state FROM encrypted_subscriptions WHERE account_id=?1",
-                [account_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let (sub, state) = current.ok_or(StoreError::SubscriptionMissing)?;
-        let sub: Subscription = serde_json::from_str(&sub)?;
-        if sub.subscription_epoch != event.subscription_epoch || sub.instance != event.instance {
-            return Err(StoreError::EpochConflict);
-        }
-        if state != "active" {
-            return Err(StoreError::SubscriptionInactive);
-        }
-        let account_count: usize = tx.query_row(
-            "SELECT count(*) FROM encrypted_push_queue WHERE account_id=?1",
-            [account_id],
-            |r| row_count(r, 0),
-        )?;
-        let global_count: usize =
-            tx.query_row("SELECT count(*) FROM encrypted_push_queue", [], |r| {
-                row_count(r, 0)
-            })?;
-        let id_count: usize =
-            tx.query_row("SELECT count(*) FROM encrypted_push_event_ids", [], |r| {
-                row_count(r, 0)
-            })?;
-        if account_count >= MAX_QUEUE_PER_ACCOUNT
-            || global_count >= MAX_QUEUE_GLOBAL
-            || id_count >= MAX_EVENT_IDS
-        {
-            return Err(StoreError::QueueFull);
-        }
-        tx.execute("INSERT INTO encrypted_push_event_ids(event_id,account_id,event_digest,expires_at) VALUES(?1,?2,?3,?4)", params![event.event_id,account_id,hash,event.expires_at])?;
-        tx.execute("INSERT INTO encrypted_push_queue(event_id,account_id,subscription_epoch,event_json,expires_at,attempts,next_attempt_at) VALUES(?1,?2,?3,?4,?5,0,?6)", params![event.event_id,account_id,event.subscription_epoch as i64,json,event.expires_at,now])?;
+        let queued = enqueue_event(&tx, &connection.uuid, event, now)?;
         tx.commit()?;
-        Ok(true)
+        Ok(queued)
     }
 
     /// Persist an attempt before returning work. An abandoned claim remains
@@ -852,6 +1002,133 @@ fn prune(tx: &Transaction<'_>, now: i64) -> Result<()> {
     Ok(())
 }
 
+fn enqueue_event(tx: &Transaction<'_>, account_id: &str, event: &Event, now: i64) -> Result<bool> {
+    event.validate(now)?;
+    let json = serde_json::to_string(event)?;
+    let hash = digest(&(account_id, event))?;
+    prune(tx, now)?;
+    let seen: Option<String> = tx
+        .query_row(
+            "SELECT event_digest FROM encrypted_push_event_ids WHERE event_id=?1",
+            [&event.event_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(seen) = seen {
+        if seen != hash {
+            return Err(StoreError::InvalidEvent);
+        }
+        return Ok(false);
+    }
+    let current: Option<(String, String)> = tx
+        .query_row(
+            "SELECT subscription_json,state FROM encrypted_subscriptions WHERE account_id=?1",
+            [account_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (sub, state) = current.ok_or(StoreError::SubscriptionMissing)?;
+    let sub: Subscription = serde_json::from_str(&sub)?;
+    if sub.subscription_epoch != event.subscription_epoch || sub.instance != event.instance {
+        return Err(StoreError::EpochConflict);
+    }
+    if sub.event_version()? != event.version {
+        return Err(StoreError::InvalidEvent);
+    }
+    if state != "active" {
+        return Err(StoreError::SubscriptionInactive);
+    }
+    insert_event(tx, account_id, event, &json, &hash, now)?;
+    Ok(true)
+}
+
+fn insert_event(
+    tx: &Transaction<'_>,
+    account_id: &str,
+    event: &Event,
+    json: &str,
+    hash: &str,
+    now: i64,
+) -> Result<()> {
+    let account_count: usize = tx.query_row(
+        "SELECT count(*) FROM encrypted_push_queue WHERE account_id=?1",
+        [account_id],
+        |r| row_count(r, 0),
+    )?;
+    let global_count: usize =
+        tx.query_row("SELECT count(*) FROM encrypted_push_queue", [], |r| {
+            row_count(r, 0)
+        })?;
+    let id_count: usize =
+        tx.query_row("SELECT count(*) FROM encrypted_push_event_ids", [], |r| {
+            row_count(r, 0)
+        })?;
+    if account_count >= MAX_QUEUE_PER_ACCOUNT
+        || global_count >= MAX_QUEUE_GLOBAL
+        || id_count >= MAX_EVENT_IDS
+    {
+        return Err(StoreError::QueueFull);
+    }
+    tx.execute("INSERT INTO encrypted_push_event_ids(event_id,account_id,event_digest,expires_at) VALUES(?1,?2,?3,?4)", params![event.event_id,account_id,hash,event.expires_at])?;
+    tx.execute("INSERT INTO encrypted_push_queue(event_id,account_id,subscription_epoch,event_json,expires_at,attempts,next_attempt_at) VALUES(?1,?2,?3,?4,?5,0,?6)", params![event.event_id,account_id,event.subscription_epoch as i64,json,event.expires_at,now])?;
+    Ok(())
+}
+
+fn ensure_confirmation(
+    tx: &Transaction<'_>,
+    account_id: &str,
+    subscription: &Subscription,
+    now: i64,
+    new_epoch: bool,
+) -> Result<()> {
+    let (event_id, issued_at): (Option<String>, Option<i64>) = tx.query_row(
+        "SELECT confirmation_event_id,confirmation_issued_at FROM encrypted_control_state WHERE account_id=?1",
+        [account_id],
+        |r| Ok((r.get(0)?,r.get(1)?)),
+    )?;
+    if let Some(event_id) = event_id {
+        let pending: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM encrypted_push_queue WHERE event_id=?1 AND account_id=?2 AND subscription_epoch=?3 AND expires_at>?4 AND (attempts<4 OR lease_until>?4))",
+            params![event_id, account_id, subscription.subscription_epoch as i64, now],
+            |r| r.get(0),
+        )?;
+        if pending {
+            return Ok(());
+        }
+    }
+    if !new_epoch
+        && issued_at
+            .is_some_and(|time| now < time.saturating_add(crate::control::CONFIRMATION_INTERVAL))
+    {
+        return Ok(());
+    }
+    let event = Event {
+        version: 2,
+        event_id: crate::push::uuid_v4().map_err(|_| StoreError::StateUnavailable)?,
+        instance: subscription.instance.clone(),
+        subscription_epoch: subscription.subscription_epoch,
+        kind: "status".into(),
+        issued_at: now,
+        expires_at: now.saturating_add(MAX_EVENT_LIFETIME),
+        code: Some("subscription_updated".into()),
+    };
+    event.validate(now)?;
+    prune(tx, now)?;
+    insert_event(
+        tx,
+        account_id,
+        &event,
+        &serde_json::to_string(&event)?,
+        &digest(&(account_id, &event))?,
+        now,
+    )?;
+    tx.execute(
+        "UPDATE encrypted_control_state SET confirmation_event_id=?2,confirmation_issued_at=?3 WHERE account_id=?1",
+        params![account_id, event.event_id, now],
+    )?;
+    Ok(())
+}
+
 #[cfg(unix)]
 fn protect_path(path: &Path) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -954,6 +1231,7 @@ fn verify_schema(db: &Connection) -> Result<()> {
         ("table", "encrypted_enrollment_requests"),
         ("table", "encrypted_push_event_ids"),
         ("table", "encrypted_push_queue"),
+        ("table", "encrypted_control_state"),
         ("trigger", "encrypted_connection_insert_guard"),
         ("trigger", "encrypted_connection_update_guard"),
         ("trigger", "encrypted_connection_delete_guard"),
@@ -983,7 +1261,8 @@ fn migrate(db: &mut Connection) -> Result<()> {
     }
     tx.execute_batch("CREATE TABLE IF NOT EXISTS connections(uuid TEXT UNIQUE ON CONFLICT REPLACE,device_id INTEGER,password TEXT,endpoint TEXT,forbidden BOOLEAN NOT NULL CHECK(forbidden IN(0,1)),last_registration INTEGER);")?;
     verify_connection_schema(&tx)?;
-    tx.execute_batch(r#"
+    if version < 2 {
+        tx.execute_batch(r#"
 CREATE TABLE encrypted_subscriptions(
  account_id TEXT PRIMARY KEY REFERENCES connections(uuid),
  subscription_epoch INTEGER NOT NULL CHECK(subscription_epoch BETWEEN 1 AND 9007199254740991),
@@ -1023,11 +1302,29 @@ CREATE TRIGGER encrypted_connection_update_guard BEFORE UPDATE OF uuid,device_id
 CREATE TRIGGER encrypted_connection_delete_guard BEFORE DELETE ON connections
  WHEN EXISTS(SELECT 1 FROM encrypted_subscriptions WHERE account_id=OLD.uuid)
  BEGIN SELECT RAISE(ABORT,'encrypted_enrollment_required'); END;
-PRAGMA user_version=2;
 "#)?;
+    }
+    if version < 3 {
+        tx.execute_batch(
+            "CREATE TABLE encrypted_control_state(
+                account_id TEXT PRIMARY KEY REFERENCES encrypted_subscriptions(account_id) ON DELETE CASCADE,
+                control_key TEXT NOT NULL,
+                generation TEXT NOT NULL,
+                last_blob_digest TEXT,
+                confirmation_event_id TEXT,
+                confirmation_issued_at INTEGER
+            );",
+        )?;
+    }
+    verify_schema(&tx)?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "control_tests.rs"]
+mod control_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1087,6 +1384,7 @@ mod tests {
             account_id: ACCOUNT.into(),
             device_id: 2,
             password: "synthetic-password-only".into(),
+            control_key: None,
             subscription: Subscription {
                 endpoint: "https://push.example.test/synthetic-token".into(),
                 p256dh: public.clone(),
@@ -1151,7 +1449,7 @@ mod tests {
                     .db
                     .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                     .unwrap(),
-                2
+                SCHEMA_VERSION
             );
             let row: (String, u32, String, String, bool, i64) = store
                 .db
@@ -1188,7 +1486,10 @@ mod tests {
     fn future_and_partial_schemas_are_rejected_without_version_downgrade() {
         let dir = TestDir::new();
         let store = dir.store();
-        store.db.pragma_update(None, "user_version", 3).unwrap();
+        store
+            .db
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
         drop(store);
         assert!(matches!(
             PushStore::open(dir.path()),
@@ -1198,7 +1499,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            3
+            SCHEMA_VERSION + 1
         );
         drop(db);
         let partial = TestDir::new();

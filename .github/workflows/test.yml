@@ -32,6 +32,8 @@ jobs:
           python3 -m pip install -r contracts/encrypted-push/v1/tools/requirements.txt -r crates/colliesocket-push/tools/requirements.txt
       - name: Frozen contract conformance
         run: python3 contracts/encrypted-push/v1/tools/conformance.py
+      - name: Enrollment v2 contract and independent control-message decryption
+        run: python3 contracts/encrypted-push/v2/tools/conformance.py
       - name: Published vector and independent decryption
         run: |
           cargo +1.90.0 fmt --manifest-path crates/colliesocket-push/Cargo.toml -- --check

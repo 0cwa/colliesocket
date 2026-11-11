@@ -36,7 +36,7 @@ pub fn uuid_v4() -> Result<String, &'static str> {
 fn new_event(sub: &Subscription, kind: &str, code: Option<&str>) -> Result<Event, &'static str> {
     let issued = now();
     Ok(Event {
-        version: 1,
+        version: sub.event_version().map_err(|error| error.code())?,
         event_id: uuid_v4()?,
         instance: sub.instance.clone(),
         subscription_epoch: sub.subscription_epoch,
@@ -69,6 +69,7 @@ pub fn enrolled(account: &str) -> Result<bool, &'static str> {
 }
 pub fn enqueue_for_connection(
     co: &crate::db::Connection,
+    expected_generation: Option<&str>,
     kind: &str,
     code: Option<&str>,
 ) -> Result<bool, &'static str> {
@@ -84,7 +85,7 @@ pub fn enqueue_for_connection(
     };
     // Preserve this exact snapshot through enqueue's transactional epoch check.
     let event = new_event(&sub, kind, code)?;
-    match store.enqueue(&co.uuid, &event, event.issued_at) {
+    match store.enqueue_for_connection(co, expected_generation, &event, event.issued_at) {
         Ok(queued) => Ok(queued),
         Err(
             StoreError::EpochConflict

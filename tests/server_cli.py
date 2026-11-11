@@ -260,7 +260,7 @@ class Harness:
     def drain(self):
         return self.cli("push", "drain", "--once")
 
-    def capture_event(self, queued, kind, epoch, auth, timeout=5):
+    def capture_event(self, queued, kind, epoch, auth, timeout=5, version=1):
         path, headers, body = self.provider.take(timeout)
         require(path == ENDPOINT_PATH, "provider endpoint changed unexpectedly")
         require(len(body) == 4096 and int.from_bytes(body[16:20], "big") == 4096,
@@ -283,7 +283,7 @@ class Harness:
         event = json.loads(compact_json)
         require(set(event) == {"version", "event_id", "instance", "subscription_epoch", "kind", "issued_at", "expires_at"},
                 "wake/test event contains unexpected fields")
-        require(event["version"] == 1 and event["subscription_epoch"] == epoch, "event version or epoch mismatch")
+        require(event["version"] == version and event["subscription_epoch"] == epoch, "event version or epoch mismatch")
         require(event["instance"] == "cli-fixture-instance" and event["kind"] == kind, "event kind or instance mismatch")
         require(event["event_id"] == queued["event_id"], "queue receipt and ciphertext event ID differ")
         event_id = uuid.UUID(event["event_id"])
@@ -295,11 +295,11 @@ class Harness:
 
     def migrations(self):
         self.stage = "migration and protected state modes"
-        require(self.cli("migrate") == {"schema_version": 2}, "migration did not select schema2")
+        require(self.cli("migrate") == {"schema_version": 3}, "migration did not select schema3")
         require(stat.S_IMODE(self.db.parent.stat().st_mode) == 0o700, "state directory is not0700")
         require(stat.S_IMODE(self.db.stat().st_mode) == 0o600, "state database is not0600")
-        require(self.rows("PRAGMA user_version") == [(2,)], "SQLite schema marker differs from CLI")
-        require(self.cli("migrate") == {"schema_version": 2}, "migration is not idempotent")
+        require(self.rows("PRAGMA user_version") == [(3,)], "SQLite schema marker differs from CLI")
+        require(self.cli("migrate") == {"schema_version": 3}, "migration is not idempotent")
         before = self.snapshot()
         self.db.chmod(0o644)
         try:
@@ -331,7 +331,7 @@ class Harness:
                 self.cli("migrate", config=config, error="state_unavailable")
                 require(self.rows("PRAGMA user_version", database=database) == [(99,)], "future schema was downgraded")
             else:
-                require(self.cli("migrate", config=config) == {"schema_version": 2}, "upstream schema migration failed")
+                require(self.cli("migrate", config=config) == {"schema_version": 3}, "upstream schema migration failed")
             require(self.rows("SELECT * FROM connections", database=database) == [original], "migration changed legacy credentials or forbidden state")
         self.mark("upstream schemas0/1 preserve connection tuple and forbidden flag;future schema fails closed")
 
@@ -592,6 +592,7 @@ class Harness:
             PASSWORD, "SYNTHETIC-ENDPOINT-CANARY", "SYNTHETIC-QUERY-CANARY",
             "SYNTHETIC-RECEIPT-CANARY", self.metadata["auth"], self.metadata["p256dh"],
             self.metadata["receiver_private"], encoded(self.new_auth), encoded(self.recovered_auth),
+            encoded(bytes(range(32))),
         ]
         require(all(marker.encode() not in joined for marker in canaries), "CLI or worker trace output exposed a synthetic secret canary")
         self.mark("trace plus specific dependency selectors cannot expose endpoint,password,auth,or receiver-key canaries in CLI/worker output")
@@ -603,6 +604,44 @@ class Harness:
         require(self.provider.count == sent, "local removal unexpectedly contacted provider")
         self.mark("explicit idempotent local removal clears state and reports signal_unlinkedfalse")
 
+    def v2_private_imports(self):
+        self.stage = "additive v2 private imports and control-key secrecy"
+        keyless = copy.deepcopy(self.recovered)
+        keyless.update(enrollment_version=2, request_id=identifier(8))
+        receipt = self.import_value(keyless)
+        require(receipt["enrollment_version"] == 2 and receipt["selected_event_version"] == 1
+                and receipt["status"] == "unchanged", "keyless v2 changed v1 behavior")
+        require(self.rows("SELECT count(*) FROM encrypted_control_state") == [(0,)],
+                "keyless v2 enabled control authority")
+        before = self.snapshot()
+        invalid = copy.deepcopy(self.recovered)
+        invalid["control_key"] = encoded(bytes(range(32)))
+        self.import_value(invalid, error="invalid_enrollment")
+        for key, error in [(None, "invalid_enrollment"), (encoded(bytes(31)), "invalid_key"),
+                           (encoded(bytes(32)) + "=", "invalid_key")]:
+            invalid = copy.deepcopy(keyless)
+            invalid["control_key"] = key
+            self.import_value(invalid, error=error)
+        require(self.snapshot() == before, "invalid control key changed durable state")
+
+        keyed = copy.deepcopy(keyless)
+        keyed.update(request_id=identifier(9), control_key=encoded(bytes(range(32))))
+        keyed["subscription"].update(subscription_epoch=4, supported_event_versions=[2])
+        receipt = self.import_value(keyed)
+        require(receipt["enrollment_version"] == 2 and receipt["selected_event_version"] == 2
+                and receipt["subscription_epoch"] == 4, "keyed v2 negotiation failed")
+        require("control_key" not in receipt and self.current()["event_version"] == 2,
+                "receipt exposed control key or status omitted negotiated version")
+        require(self.rows("SELECT count(*) FROM encrypted_control_state") == [(1,)],
+                "private import failed to persist control authority")
+        registered = self.snapshot()
+        require(self.import_value(keyed) == receipt and self.snapshot() == registered,
+                "keyed private-import replay was not idempotent")
+        queued = self.cli("push", "test", ACCOUNT)
+        self.drain()
+        self.capture_event(queued, "test", 4, self.recovered_auth, version=2)
+        self.mark("keyless v2 preserves v1;keyed v2 private import negotiates2;invalid/null/v1 control keys rejected;receipts redact key;v2 push independently decrypted")
+
     def run(self):
         self.migrations()
         self.protected_imports()
@@ -611,6 +650,7 @@ class Harness:
         self.authorization_and_receipts()
         self.legacy_boundaries()
         self.worker_and_discovery()
+        self.v2_private_imports()
         self.redaction_and_removal()
 
 

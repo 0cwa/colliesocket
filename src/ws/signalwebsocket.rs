@@ -21,7 +21,7 @@ use super::{
     tls,
     websocket_connection::{self, WebSocketConnection},
 };
-use crate::{config, db::Connection, push, utils::post_allowed};
+use crate::{config, control, db::Connection, push, utils::post_allowed};
 
 const PUSH_TIMEOUT: Duration = Duration::from_secs(1);
 const DELIVERY_CHECK_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -72,6 +72,8 @@ impl std::error::Error for Error {}
 pub struct SignalWebSocket {
     original: Connection,
     encrypted_mode: bool,
+    control_generation: Option<String>,
+    current_endpoint: Mutex<String>,
     creds: String,
     push_endpoint: url::Url,
     pub channels: Channels,
@@ -129,6 +131,8 @@ impl SignalWebSocket {
                 raw_endpoint.to_owned(),
             ),
             encrypted_mode,
+            control_generation: None,
+            current_endpoint: Mutex::new(raw_endpoint.to_owned()),
             creds: format!("{uuid}.{device_id}:{password}"),
             push_endpoint,
             channels: Channels::none(),
@@ -138,6 +142,12 @@ impl SignalWebSocket {
     }
 
     pub async fn connection_loop(&mut self) -> Result<()> {
+        // Bind this socket to the private import that created it. In-band
+        // endpoint changes retain the generation; a new private import revokes it.
+        if self.encrypted_mode {
+            self.control_generation = control::generation_for_connection(&self.original)
+                .map_err(|_| eyre!("control_state_unavailable"))?;
+        }
         let mut count: u64 = 0;
         loop {
             let start = Instant::now();
@@ -202,15 +212,45 @@ impl SignalWebSocket {
         if !self.is_signal_service_envelope(&request) {
             return Ok(None);
         }
-        self.send_response(self.create_websocket_response(&request))
-            .await?;
-        Ok(match request.body {
+        let envelope = match request.body.as_deref() {
             None => Some(Envelope {
                 urgent: Some(false),
                 ..Envelope::default()
             }),
-            Some(body) => Envelope::decode(&body[..]).ok(),
-        })
+            Some(body) => Envelope::decode(body).ok(),
+        };
+        let mut consumed = false;
+        if self.encrypted_mode && self.control_generation.is_some() {
+            if let Some(content) = envelope.as_ref().and_then(|e| e.content.as_deref()) {
+                if control::is_control(content) {
+                    // Sender metadata and urgent are untrusted. Only successful
+                    // authenticated decryption can authorize an endpoint update.
+                    match control::handle(
+                        &self.current_connection()?,
+                        self.control_generation.as_deref(),
+                        content,
+                    )
+                    .await
+                    .map_err(|_| eyre!("control_update_failed"))?
+                    {
+                        control::ControlResult::Applied { endpoint }
+                        | control::ControlResult::Replayed { endpoint } => {
+                            *self
+                                .current_endpoint
+                                .lock()
+                                .map_err(|_| eyre!("state_unavailable"))? = endpoint;
+                        }
+                        control::ControlResult::Rejected => (),
+                    }
+                    consumed = true;
+                }
+            }
+        }
+        // A valid control update and its status outbox entry are committed
+        // before ACK. A storage failure returns above without losing the frame.
+        self.send_response(self.create_websocket_response(&request))
+            .await?;
+        Ok(if consumed { None } else { envelope })
     }
 
     fn is_signal_service_envelope(&self, request: &WebSocketRequestMessage) -> bool {
@@ -243,8 +283,13 @@ impl SignalWebSocket {
         let attempted = if self.encrypted_mode {
             // The guard atomically verifies the original connection tuple before
             // enqueueing. False means this socket is obsolete; never downgrade.
-            push::enqueue_for_connection(&self.original, "wake", None)
-                .map_err(|_| eyre!("push_enqueue_failed"))?
+            push::enqueue_for_connection(
+                &self.current_connection()?,
+                self.control_generation.as_deref(),
+                "wake",
+                None,
+            )
+            .map_err(|_| eyre!("push_enqueue_failed"))?
         } else if config::legacy_wake_enabled()
             && push::legacy_connection_is_current(&self.original)
                 .map_err(|_| eyre!("state_unavailable"))?
@@ -275,9 +320,26 @@ impl SignalWebSocket {
             }
             *instant = Instant::now();
         }
-        let _ = push::enqueue_for_connection(&self.original, "status", Some("connection_conflict"))
-            .map_err(|_| eyre!("push_enqueue_failed"))?;
+        let _ = push::enqueue_for_connection(
+            &self.current_connection()?,
+            self.control_generation.as_deref(),
+            "status",
+            Some("connection_conflict"),
+        )
+        .map_err(|_| eyre!("push_enqueue_failed"))?;
         Ok(())
+    }
+
+    fn current_connection(&self) -> Result<Connection> {
+        Ok(Connection::new(
+            self.original.uuid.clone(),
+            self.original.device_id,
+            self.original.password.clone(),
+            self.current_endpoint
+                .lock()
+                .map_err(|_| eyre!("state_unavailable"))?
+                .clone(),
+        ))
     }
 
     fn waiting_timeout_reached(&self) -> Result<bool> {
@@ -289,6 +351,10 @@ impl SignalWebSocket {
             > PUSH_TIMEOUT)
     }
 }
+
+#[cfg(test)]
+#[path = "control_tests.rs"]
+mod control_tests;
 
 #[cfg(test)]
 mod tests {

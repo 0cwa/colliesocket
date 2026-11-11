@@ -25,6 +25,21 @@ for the pinned local build and CI interface. Server candidate manifests under
 NOT RUN gates. Android, physical-device, deployment and shipping security
 acceptance are separate from the local synthetic server checks.
 
+## Endpoint updates over Signal
+
+[Enrollment v2](contracts/encrypted-push/v2/README.md) lets an enrolled phone
+update its push endpoint and Web Push keys through CollieSocket's existing
+Signal connection, including when the server is behind NAT. The phone creates
+an independent control key and includes it only in the protected private import.
+It then sends an authenticated, non-urgent control message to CollieSocket's
+linked-device copy and waits for an encrypted status push on the new subscription.
+
+Enrollments without a control key keep v1 behavior. The v1 contract remains
+unchanged; keyed v2 enrollments negotiate version-2 push events. See the
+[v2 operator notes](docs/encrypted-push-v2.md) for migration, confirmation,
+recovery and verification. The phone implementation belongs to
+[Collie IM](https://github.com/0cwa/collieim-android).
+
 ## Repository boundaries
 
 ChatGPT moved the desktop/Android application planning to

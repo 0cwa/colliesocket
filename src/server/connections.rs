@@ -26,7 +26,10 @@ pub async fn run() {
         tokio::select! {
             _=poll.tick()=>{
                 let Ok(connections)=DB.list()else{log::warn!("connection_state_unavailable");continue};
-                let enrolled=match crate::push_store::PushStore::open(config::get_db()).and_then(|s|s.list_enrolled_account_ids()){
+                let store=match crate::push_store::PushStore::open(config::get_db()){
+                    Ok(store)=>store,Err(_)=>{log::warn!("connection_state_unavailable");continue}
+                };
+                let enrolled=match store.list_enrolled_account_ids(){
                     Ok(ids)=>ids,Err(_)=>{log::warn!("connection_state_unavailable");continue}
                 };
                 let mut wanted=HashMap::new();
@@ -34,7 +37,12 @@ pub async fn run() {
                     let encrypted_mode=enrolled.contains(&co.uuid);
                     if co.forbidden||!config::is_uuid_valid(&co.uuid)||!(encrypted_mode||config::legacy_wake_enabled()){continue}
                     if wanted.len()>=4096{log::warn!("connection_capacity_exceeded");break}
-                    let bytes=serde_json::to_vec(&serde_json::json!([co.device_id,co.password,co.endpoint,encrypted_mode])).expect("state_unavailable");
+                    let control_generation=match store.control_generation_for_connection(&co){
+                        Ok(value)=>value,Err(_)=>{log::warn!("connection_state_unavailable");continue}
+                    };
+                    // A private import can replace control authority without
+                    // changing Signal credentials or the endpoint.
+                    let bytes=serde_json::to_vec(&serde_json::json!([co.device_id,co.password,co.endpoint,encrypted_mode,control_generation])).expect("state_unavailable");
                     let digest=openssl::sha::sha256(&bytes);
                     wanted.insert(co.uuid.clone(),digest);
                     if active.get(&co.uuid).is_some_and(|(old,_,_)|old==&digest){continue}
@@ -42,7 +50,7 @@ pub async fn run() {
                     let (handle,registration)=AbortHandle::new_pair();
                     let id=co.uuid.clone();generation=generation.wrapping_add(1);let current=generation;
                     active.insert(id.clone(),(digest,current,handle));
-                    jobs.push(async move{let _=Abortable::new(connection_loop(co,encrypted_mode),registration).await;(id,current)}.boxed_local());
+                    jobs.push(async move{let _=Abortable::new(connection_loop(co,encrypted_mode,control_generation),registration).await;(id,current)}.boxed_local());
                 }
                 active.retain(|id,(digest,_,handle)|if wanted.get(id)==Some(digest){true}else{handle.abort();false});
             },
@@ -52,7 +60,7 @@ pub async fn run() {
         }
     }
 }
-async fn connection_loop(co: Connection, encrypted_mode: bool) {
+async fn connection_loop(co: Connection, encrypted_mode: bool, control_generation: Option<String>) {
     let Ok(mut socket) = SignalWebSocket::new(
         &co.uuid,
         co.device_id,
@@ -77,7 +85,7 @@ async fn connection_loop(co: Connection, encrypted_mode: bool) {
             if result.err().is_some_and(|e|matches!(e.downcast_ref::<SignalWebSocketError>(),Some(SignalWebSocketError::RegistrationRemoved))){
                 // Only Signal authentication failure can mark these exact local
                 // credentials forbidden. No late old-worker status or unlink.
-                if DB.forbid_if_current(&co).unwrap_or(false){METRICS.forbiddens.inc();log::info!("signal_credentials_rejected");}
+                if DB.forbid_if_current(&co,control_generation.as_deref()).unwrap_or(false){METRICS.forbiddens.inc();log::info!("signal_credentials_rejected");}
             }
         },
         _=metrics=>log::warn!("signal_metrics_channel_closed"),

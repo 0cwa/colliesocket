@@ -7,6 +7,7 @@
 
 mod cli;
 mod config;
+mod control;
 mod db;
 mod enrollment;
 mod push;
