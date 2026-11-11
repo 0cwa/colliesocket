@@ -1,0 +1,81 @@
+{
+  "record_version": 1,
+  "disclosure": "ChatGPT prepared this product-direction addendum from the user's 2026-11-11 instruction.",
+  "state": "PRODUCT_DIRECTION_RECORDED_DESIGN_PROPOSED",
+  "document": "docs/architecture/native-gui-host-v1.md",
+  "primary_product": "Installable cross-platform GUI with native desktop and Android hosting, including selected older Android devices",
+  "container_role": "Optional headless packaging and test format; not required for normal installation or native-product acceptance",
+  "desired_modes": [
+    "same-device",
+    "local-network",
+    "optional-user-tunnel"
+  ],
+  "logical_roles": [
+    "CollieSocket encrypted sender",
+    "UnifiedPush provider",
+    "platform distributor",
+    "recipient connector/application",
+    "native notification presentation"
+  ],
+  "current_candidate_limit": "Current source implements the CollieSocket sender service, not the new provider/distributor or native GUI hosts.",
+  "preserved_pins": {
+    "contract": "0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f",
+    "handoff": "a58a46e278efdb89f9e6fd46d6b9556189a636eb",
+    "server_source": "172ab2f378c9bd5a6d2fa9df94c3506414320339",
+    "server_candidate_manifest": "84f43137358a93a8d973a594514443c54da3f76f",
+    "fixture_manifest_sha256": "226bff31ca34b23e411929812ab86105ee970d0aab84848b1b53b18edff21568"
+  },
+  "change_control": {
+    "frozen_contract_changed": false,
+    "existing_handoff_changed": false,
+    "existing_candidate_evidence_changed": false,
+    "executable_or_database_changed": false,
+    "consumer_pins_forced": false,
+    "cross_owner_repositories_edited": false,
+    "new_profiles": "Native host and pairing need separate versioning, compatibility notes and acceptance before implementation claims.",
+    "enrollment_boundary": "Current protected local file/stdin authority remains; no new remote pairing or HTTP enrollment is implemented.",
+    "migration": "None for this documentation-only addendum."
+  },
+  "proposed_next_server_slice": "Extract an embeddable Rust core with explicit lifecycle and platform security adapters; evaluate provider/distributor reuse while retaining existing conformance gates.",
+  "unresolved": {
+    "oldest_android_version": null,
+    "oldest_android_device": null,
+    "required_android_abis": null,
+    "gui_framework": null,
+    "desktop_order": null,
+    "tunnel_protocol_and_trust_boundary": null,
+    "provider_distributor_protocol": null
+  },
+  "acceptance": [
+    {
+      "gate": "Native Linux GUI and lifecycle",
+      "result": "NOT RUN"
+    },
+    {
+      "gate": "New UnifiedPush provider/distributor interoperability",
+      "result": "NOT RUN"
+    },
+    {
+      "gate": "Oldest selected Android API/ABI host",
+      "result": "NOT RUN"
+    },
+    {
+      "gate": "Android Doze/process-death/reboot/battery behavior",
+      "result": "NOT RUN"
+    },
+    {
+      "gate": "KDE D-Bus and notification integration",
+      "result": "NOT RUN"
+    },
+    {
+      "gate": "Native Windows/macOS hosting",
+      "result": "NOT RUN"
+    },
+    {
+      "gate": "LAN/tunnel reachability and authenticated pairing",
+      "result": "NOT RUN"
+    }
+  ],
+  "ownership": "Existing Orchestrator 1/2/3 ownership remains; this addendum does not assign another owner's implementation or update their pins.",
+  "evidence_scope": "Read-only source inspection and primary-documentation research; previous server tests were not rerun for a documentation-only change."
+}

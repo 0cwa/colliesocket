@@ -25,6 +25,20 @@ for the pinned local build and CI interface. Server candidate manifests under
 NOT RUN gates. Android, physical-device, deployment and shipping security
 acceptance are separate from the local synthetic server checks.
 
+## Native GUI product direction
+
+ChatGPT recorded the user's updated direction in the
+[native GUI host design](docs/architecture/native-gui-host-v1.md) and
+[product-direction addendum](handoff/product-direction-v1.json).
+The primary goal is an installable desktop and Android app with local, LAN and
+optional tunnel access. Containers remain an optional headless format.
+
+The current candidate is the CollieSocket sender service. A general UnifiedPush
+provider/distributor and native GUI hosts still need implementation and acceptance.
+The oldest Android target and GUI toolkit remain open decisions. The frozen v1
+contract and published candidate evidence retain their existing scope; native
+host and pairing interfaces will be separately versioned.
+
 ## Upstream MollySocket documentation
 
 MollySocket allows getting signal notifications via [UnifiedPush](https://unifiedpush.org/). It works like a linked device, which doesn't have an encryption key, connected to the Signal server. Everytime it receives an encrypted event, it notifies your mobile via UnifiedPush.
