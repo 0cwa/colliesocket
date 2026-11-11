@@ -1,0 +1,18 @@
+{
+  "provenance_version": 1,
+  "label": "parallel-start-v2",
+  "authored_commit": "f292183b8c225d34c4aa0364e46e6a4c09d58764",
+  "authored_tree": "f1c79b309e77dbc352bfee59ff3c765a642281e1",
+  "parent": "0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f",
+  "author": "0cwa <0@none.org>",
+  "committer": "ChatGPT <codex@openai.com>",
+  "bundle": "provenance/encrypted-push/parallel-start-v2.bundle",
+  "bundle_sha256": "9497fbe15ce6ac2a477d6eba1dd7ae389f7bbb3a4a5071e9dca8dc7bd5c7edef",
+  "bundle_prerequisite": "0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f",
+  "publication": "Canonical GitHub API transport commits carry this exact source plus authored provenance. Their actual author/committer metadata is GitHub-provided and is not relabeled as the patch author. The canonical commit is reported externally/in a subsequent handoff; no self hash is embedded.",
+  "signatures_or_signoffs_added": false,
+  "verification_commands": [
+    "git bundle verify provenance/encrypted-push/parallel-start-v2.bundle",
+    "git fetch provenance/encrypted-push/parallel-start-v2.bundle refs/colliesocket/authored/parallel-start-v2"
+  ]
+}

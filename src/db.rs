@@ -7,13 +7,10 @@ use std::{
 
 use crate::config;
 
-mod migrations;
-
 pub struct MollySocketDb {
     db: Arc<Mutex<rusqlite::Connection>>,
 }
 
-#[derive(Debug)]
 pub struct Connection {
     pub uuid: String,
     pub device_id: u32,
@@ -21,6 +18,15 @@ pub struct Connection {
     pub endpoint: String,
     pub forbidden: bool,
     pub last_registration: OptTime,
+}
+
+impl std::fmt::Debug for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Connection")
+            .field("forbidden", &self.forbidden)
+            .field("credentials", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl Connection {
@@ -83,18 +89,15 @@ impl Connection {
 
 impl MollySocketDb {
     pub fn new() -> Result<MollySocketDb> {
-        let db = rusqlite::Connection::open(config::get_db())?;
+        Self::open(config::get_db())
+    }
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<MollySocketDb> {
+        let path = path.as_ref();
+        drop(crate::push_store::PushStore::open(path)?);
+        let db = rusqlite::Connection::open(path)?;
+        db.busy_timeout(Duration::from_secs(5))?;
         db.execute_batch(
-            "
-CREATE TABLE IF NOT EXISTS connections(
-    uuid TEXT UNIQUE ON CONFLICT REPLACE,
-    device_id INTEGER,
-    password TEXT,
-    endpoint TEXT,
-    forbidden BOOLEAN NOT NULL CHECK (forbidden IN (0, 1)),
-    last_registration INTEGER
-)
-            ",
+            "PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA synchronous=FULL;",
         )?;
         Ok(MollySocketDb {
             db: Arc::new(Mutex::new(db)),
@@ -119,6 +122,12 @@ CREATE TABLE IF NOT EXISTS connections(
             [&i64::from(&now).to_string(), uuid],
         )?;
         Ok(())
+    }
+
+    pub fn forbid_if_current(&self, co: &Connection) -> Result<bool> {
+        Ok(self.db.lock().unwrap().execute(
+            "UPDATE connections SET forbidden=1 WHERE uuid=?1 AND device_id=?2 AND password=?3 AND endpoint=?4 AND forbidden=0",
+            rusqlite::params![co.uuid,co.device_id,co.password,co.endpoint])?>0)
     }
 
     pub fn list(&self) -> Result<Vec<Connection>> {
@@ -155,8 +164,11 @@ mod tests {
 
     #[test]
     fn test_db() {
-        config::load_config(None);
-        let db = MollySocketDb::new().unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "colliesocket-db-{}",
+            crate::push::uuid_v4().unwrap()
+        ));
+        let db = MollySocketDb::open(directory.join("state.db")).unwrap();
         let uuid = "0d2ff653-3d88-43de-bcdb-f6657d3484e4";
         db.add(&Connection::new(
             String::from(uuid),
@@ -172,5 +184,36 @@ mod tests {
             .map(|co| &co.uuid)
             .any(|row_uuid| row_uuid == uuid));
         db.rm(uuid).unwrap();
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn late_signal_rejection_does_not_forbid_replacement_credentials() {
+        let directory = std::env::temp_dir().join(format!(
+            "colliesocket-db-{}",
+            crate::push::uuid_v4().unwrap()
+        ));
+        let db = MollySocketDb::open(directory.join("state.db")).unwrap();
+        let old = Connection::new(
+            "11111111-1111-4111-8111-111111111111".into(),
+            2,
+            "synthetic-old-password".into(),
+            "https://push.example.test/a".into(),
+        );
+        db.add(&old).unwrap();
+        let new = Connection::new(
+            old.uuid.clone(),
+            2,
+            "synthetic-new-password".into(),
+            old.endpoint.clone(),
+        );
+        db.add(&new).unwrap();
+        assert!(!db.forbid_if_current(&old).unwrap());
+        assert!(!db.get(&old.uuid).unwrap().forbidden);
+        assert!(db.forbid_if_current(&new).unwrap());
+        assert!(db.get(&new.uuid).unwrap().forbidden);
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

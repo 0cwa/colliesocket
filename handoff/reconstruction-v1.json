@@ -1,0 +1,38 @@
+{
+  "record_version": 1,
+  "reason": "Previously generated local source, fixtures and evidence were never remotely published. They did not survive an execution-workspace reset, and the user has no recovery bundle. This record explicitly distinguishes a reconstructed replacement from exact recovery.",
+  "historical_unavailable_commits": {
+    "C0": "9bf0d9cab4f01873617f7ad22fa1a98a6a2ec5b7",
+    "H0": "f7ef230bb495172b8b2d8ae3c3df4cac5adfc6f5",
+    "C1": "29f965fe6282bbee5d1911a2e3781b732231e187",
+    "M1": "22a09f6a7bd8daf03e0cd4426ae05e781bbaa86a"
+  },
+  "historical_bundle_sha256": "0d4fa68c71d2ddba407ba970ab84c4b17838160dfc4cac4a03d274e5fd8beac0",
+  "historical_objects_recovered": false,
+  "historical_test_results_inherited": false,
+  "canonical_repository": "0cwa/colliesocket",
+  "work_branch": "work/encrypted-push-v1",
+  "upstream_base": "f1e10c97d4644df4d326b9d7dedb160b297d41ca",
+  "replacement_policy": "Reconstruct the documented application/enrollment v1 semantics and RFC8291 standard framing, validate new bytes and dependencies afresh, publish a new C0, and issue parallel-start-v2.json in a subsequent H0. Prior identifiers remain historical only; no identity or byte-equivalence is claimed.",
+  "change_control": "After READY, freeze the replacement contract and manifest. Report future problems through versioned commits and migration notes; never force consumer pins.",
+  "ownership": {
+    "orchestrator_1": [
+      "CollieSocket",
+      "migrations",
+      "server CLI",
+      "server image",
+      "server CI",
+      "canonical contracts and fixtures"
+    ],
+    "orchestrator_2": [
+      "Android",
+      "engineering patches"
+    ],
+    "orchestrator_3": [
+      "deployment",
+      "system tests",
+      "combined-test reporting"
+    ]
+  },
+  "publication_authorship": "Authored source bundles preserve 0cwa <0@none.org> patch authorship and ChatGPT committer disclosure. GitHub API transport commits use the authenticated actor metadata returned by GitHub, which must be reported as such. Existing upstream commits and credits are retained. No signatures or signoffs are fabricated."
+}

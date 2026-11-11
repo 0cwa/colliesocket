@@ -1,19 +1,15 @@
 use async_trait::async_trait;
 use eyre::{eyre, Result};
 use futures_channel::mpsc;
-use http::StatusCode;
 use prost::Message;
-use rocket::serde::json::serde_json::json;
 use std::{
     fmt::{Display, Formatter},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::time;
+use tokio::{sync::mpsc as websocket_mpsc, time};
 use tokio_tungstenite::tungstenite;
 
-use super::tls;
-use super::websocket_connection::{self, WebSocketConnection};
 use super::{
     proto_signalservice::Envelope,
     proto_websocketresources::{
@@ -21,27 +17,23 @@ use super::{
         WebSocketResponseMessage,
     },
 };
-use crate::{config, utils::post_allowed::post_allowed};
+use super::{
+    tls,
+    websocket_connection::{self, WebSocketConnection},
+};
+use crate::{config, db::Connection, push, utils::post_allowed};
 
-/// Time between 2 regular push notifications
-///
-/// We don't need to send a push notif per message, as
-/// the client stay connected for more than 10secs on push
 const PUSH_TIMEOUT: Duration = Duration::from_secs(1);
-/// Time between last push notification and a delivery check
-///
-/// A delivery check is a push notif used to control the HTTP reponse of the push endpoint,
-/// to check if we have the good one.
-/// The delivery check is useful in case the user has migrated to another mollysocket
-/// instance, but we are still connected, causing an error 4409 on the other instance
-const DELIVERY_CHECK_TIMEOUT: Duration = Duration::from_hours(1);
+const DELIVERY_CHECK_TIMEOUT: Duration = Duration::from_secs(3600);
 
 #[derive(Debug)]
 pub struct Channels {
-    ws_tx: Option<mpsc::UnboundedSender<tungstenite::Message>>,
-    pub on_message_tx: Option<mpsc::UnboundedSender<u32>>,
-    pub on_push_tx: Option<mpsc::UnboundedSender<u32>>,
-    pub on_reconnection_tx: Option<mpsc::UnboundedSender<u32>>,
+    ws_tx: Option<websocket_mpsc::Sender<tungstenite::Message>>,
+    // Retain one sender: cloning futures senders per notification can keep
+    // acquiring reserved slots and defeat a nominally bounded metrics queue.
+    pub on_message_tx: Option<Mutex<mpsc::Sender<u32>>>,
+    pub on_push_tx: Option<Mutex<mpsc::Sender<u32>>>,
+    pub on_reconnection_tx: Option<Mutex<mpsc::Sender<u32>>>,
 }
 
 impl Channels {
@@ -55,25 +47,31 @@ impl Channels {
     }
 }
 
-#[derive(Debug)]
-pub enum Error {
-    /// We got:
-    /// \* a 403
-    /// \* or a ws response ConnectedElseWhere and our push service isn't valid anymore
-    /// => the registration has migrated
-    RegistrationRemoved,
+fn metric_tick(sender: &Option<Mutex<mpsc::Sender<u32>>>) {
+    if let Some(sender) = sender {
+        if let Ok(mut sender) = sender.try_lock() {
+            let _ = sender.try_send(1);
+        }
+    }
 }
 
+#[derive(Debug)]
+pub enum Error {
+    /// Signal itself rejected the linked-device credentials. Provider outcomes
+    /// can never construct this error and never authorize unlinking a device.
+    RegistrationRemoved,
+}
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
     }
 }
-
 impl std::error::Error for Error {}
 
-#[derive(Debug)]
+// No Debug: this object holds a linked-device credential and endpoint token.
 pub struct SignalWebSocket {
+    original: Connection,
+    encrypted_mode: bool,
     creds: String,
     push_endpoint: url::Url,
     pub channels: Channels,
@@ -84,35 +82,27 @@ pub struct SignalWebSocket {
 #[async_trait(?Send)]
 impl WebSocketConnection for SignalWebSocket {
     fn get_url(&self) -> &str {
-        &config::get_ws_endpoint()
+        config::get_ws_endpoint()
     }
-
     fn get_creds(&self) -> &str {
         &self.creds
     }
-
-    fn get_websocket_tx(&self) -> &Option<mpsc::UnboundedSender<tungstenite::Message>> {
+    fn get_websocket_tx(&self) -> &Option<websocket_mpsc::Sender<tungstenite::Message>> {
         &self.channels.ws_tx
     }
-
-    fn set_websocket_tx(&mut self, tx: Option<mpsc::UnboundedSender<tungstenite::Message>>) {
+    fn set_websocket_tx(&mut self, tx: Option<websocket_mpsc::Sender<tungstenite::Message>>) {
         self.channels.ws_tx = tx;
     }
-
     fn get_last_keepalive(&self) -> Arc<Mutex<Instant>> {
-        Arc::clone(&self.last_keepalive)
+        self.last_keepalive.clone()
     }
 
     async fn on_message(&self, message: WebSocketMessage) -> Result<()> {
         if let Some(type_int) = message.r#type {
-            if let Ok(type_) = Type::try_from(type_int) {
-                match type_ {
-                    Type::Response => self.on_response(message.response),
-                    Type::Request => {
-                        let _ = self.on_request(message.request).await?;
-                    }
-                    _ => (),
-                };
+            match Type::try_from(type_int) {
+                Ok(Type::Response) => self.on_response(message.response)?,
+                Ok(Type::Request) => self.on_request(message.request).await?,
+                _ => (),
             }
         }
         Ok(())
@@ -120,242 +110,241 @@ impl WebSocketConnection for SignalWebSocket {
 }
 
 impl SignalWebSocket {
-    pub fn new<'a, 'b: 'a>(
+    pub fn new(
         uuid: &str,
         device_id: u32,
         password: &str,
-        push_endpoint: &str,
+        raw_endpoint: &str,
+        encrypted_mode: bool,
     ) -> Result<Self> {
-        let push_endpoint = url::Url::parse(&push_endpoint)?;
+        let push_endpoint = url::Url::parse(raw_endpoint).map_err(|_| eyre!("invalid_endpoint"))?;
+        let now = Instant::now();
         Ok(Self {
-            creds: format!("{}.{}:{}", uuid, device_id, password),
+            // Retain the exact original text; URL normalization must not alter
+            // the tuple used by guards against callbacks from obsolete sockets.
+            original: Connection::new(
+                uuid.to_owned(),
+                device_id,
+                password.to_owned(),
+                raw_endpoint.to_owned(),
+            ),
+            encrypted_mode,
+            creds: format!("{uuid}.{device_id}:{password}"),
             push_endpoint,
             channels: Channels::none(),
-            push_instant: Arc::new(Mutex::new(
-                Instant::now().checked_sub(PUSH_TIMEOUT).unwrap(),
-            )),
-            last_keepalive: Arc::new(Mutex::new(Instant::now())),
+            push_instant: Arc::new(Mutex::new(now.checked_sub(PUSH_TIMEOUT).unwrap_or(now))),
+            last_keepalive: Arc::new(Mutex::new(now)),
         })
     }
 
     pub async fn connection_loop(&mut self) -> Result<()> {
-        let mut count = 0;
+        let mut count: u64 = 0;
         loop {
-            let instant = Instant::now();
+            let start = Instant::now();
+            *self
+                .last_keepalive
+                .lock()
+                .map_err(|_| eyre!("state_unavailable"))? = start;
+            if let Err(error) = self
+                .connect(tls::build_tls_connector().map_err(|_| eyre!("signal_tls_unavailable"))?)
+                .await
             {
-                let mut keepalive = self.last_keepalive.lock().unwrap();
-                *keepalive = Instant::now();
-            }
-            if let Err(e) = self.connect(tls::build_tls_connector()?).await {
-                if let Some(Error::RegistrationRemoved) = e.downcast_ref::<Error>() {
-                    log::debug!("connection_loop: got RegistrationRemoved.");
-                    return Err(eyre!(Error::RegistrationRemoved));
-                } else if let Some(tungstenite::Error::Http(resp)) =
-                    e.downcast_ref::<tungstenite::Error>()
+                if let Some(tungstenite::Error::Http(response)) =
+                    error.downcast_ref::<tungstenite::Error>()
                 {
-                    if resp.status() == 403 {
-                        log::debug!("connection_loop: got HTTP error 403 (linked device creds aren't valid anymore).");
+                    if response.status() == 403 {
                         return Err(eyre!(Error::RegistrationRemoved));
-                    } else {
-                        log::debug!("HTTP error: {:?}", e);
                     }
+                    log::debug!("signal_http_error");
                 } else if let Some(websocket_connection::Error::ConnectedElseWhere) =
-                    e.downcast_ref::<websocket_connection::Error>()
+                    error.downcast_ref::<websocket_connection::Error>()
                 {
-                    log::debug!("connection_loop: got ConnectedElseWhere.");
-                    // we try to push a simple json {"code": 4409}, if we receive a 403, 404 or 410:
-                    // then the registration should be handled as removed (like a 403)
-                    let _ = self.push_delivery_check().await?;
+                    self.push_delivery_check().await?;
                 } else {
-                    log::debug!("Connection error: {:?}", e);
+                    log::debug!("signal_connection_error");
                 }
             }
-            if let Some(duration) = Instant::now().checked_duration_since(instant) {
-                if duration > Duration::from_secs(60) {
-                    count = 0;
-                }
+            if start.elapsed() > Duration::from_secs(60) {
+                count = 0;
             }
-            if let Some(tx) = &self.channels.on_reconnection_tx {
-                let _ = tx.unbounded_send(1);
-            }
-            count += 1;
-            log::info!("Retrying to connect in {}0 seconds.", count);
+            metric_tick(&self.channels.on_reconnection_tx);
+            count = (count + 1).min(30);
             time::sleep(Duration::from_secs(count * 10)).await;
         }
     }
 
-    fn on_response(&self, response: Option<WebSocketResponseMessage>) {
-        log::debug!("New response");
+    fn on_response(&self, response: Option<WebSocketResponseMessage>) -> Result<()> {
         if response.is_some() {
-            let mut keepalive = self.last_keepalive.lock().unwrap();
-            *keepalive = Instant::now();
+            *self
+                .last_keepalive
+                .lock()
+                .map_err(|_| eyre!("state_unavailable"))? = Instant::now();
         }
+        Ok(())
     }
 
-    /**
-     * That's when we must send a notification
-     */
     async fn on_request(&self, request: Option<WebSocketRequestMessage>) -> Result<()> {
-        log::debug!("New request");
         if let Some(request) = request {
-            if let Some(envelope) = self.request_to_envelope(request).await {
-                if let Some(tx) = &self.channels.on_message_tx {
-                    let _ = tx.unbounded_send(1);
-                }
-                if self.waiting_timeout_reached() {
-                    if envelope.urgent() {
-                        let _ = self.send_push().await?;
-                    }
-                } else {
-                    log::debug!("The waiting timeout is not reached: the request is ignored.");
+            if let Some(envelope) = self.request_to_envelope(request).await? {
+                metric_tick(&self.channels.on_message_tx);
+                if self.waiting_timeout_reached()? && envelope.urgent() {
+                    self.send_push().await?;
                 }
             }
         }
         Ok(())
     }
 
-    /**
-     * Extract [`Envelope`] from [`request`] and send response to server.
-     */
-    async fn request_to_envelope(&self, request: WebSocketRequestMessage) -> Option<Envelope> {
-        // dbg!(&request.path);
-        let response = self.create_websocket_response(&request);
-        // dbg!(&response);
-        if self.is_signal_service_envelope(&request) {
-            self.send_response(response).await;
-            return match request.body {
-                None => Some(Envelope {
-                    r#type: None,
-                    source_service_id: None,
-                    source_device: None,
-                    destination_service_id: None,
-                    timestamp: None,
-                    content: None,
-                    server_guid: None,
-                    server_timestamp: None,
-                    urgent: Some(false),
-                    updated_pni: None,
-                    story: None,
-                    reporting_token: None,
-                }),
-                Some(body) => Envelope::decode(&body[..]).ok(),
-            };
+    async fn request_to_envelope(
+        &self,
+        request: WebSocketRequestMessage,
+    ) -> Result<Option<Envelope>> {
+        if !self.is_signal_service_envelope(&request) {
+            return Ok(None);
         }
-        None
+        self.send_response(self.create_websocket_response(&request))
+            .await?;
+        Ok(match request.body {
+            None => Some(Envelope {
+                urgent: Some(false),
+                ..Envelope::default()
+            }),
+            Some(body) => Envelope::decode(&body[..]).ok(),
+        })
     }
 
-    fn is_signal_service_envelope(
-        &self,
-        WebSocketRequestMessage {
-            verb,
-            path,
-            body: _,
-            headers: _,
-            id: _,
-        }: &WebSocketRequestMessage,
-    ) -> bool {
-        if let Some(verb) = verb {
-            if let Some(path) = path {
-                return verb.eq("PUT") && path.eq("/api/v1/message");
-            }
-        }
-        false
+    fn is_signal_service_envelope(&self, request: &WebSocketRequestMessage) -> bool {
+        request.verb.as_deref() == Some("PUT") && request.path.as_deref() == Some("/api/v1/message")
     }
 
     fn create_websocket_response(
         &self,
         request: &WebSocketRequestMessage,
     ) -> WebSocketResponseMessage {
-        if self.is_signal_service_envelope(request) {
-            return WebSocketResponseMessage {
-                id: request.id,
-                status: Some(200),
-                message: Some(String::from("OK")),
-                headers: Vec::new(),
-                body: None,
-            };
-        }
+        let (status, message) = if self.is_signal_service_envelope(request) {
+            (200, "OK")
+        } else {
+            (400, "Unknown")
+        };
         WebSocketResponseMessage {
             id: request.id,
-            status: Some(400),
-            message: Some(String::from("Unknown")),
+            status: Some(status),
+            message: Some(message.into()),
             headers: Vec::new(),
             body: None,
         }
     }
 
     async fn send_push(&self) -> Result<()> {
-        log::debug!("Sending the notification.");
+        *self
+            .push_instant
+            .lock()
+            .map_err(|_| eyre!("state_unavailable"))? = Instant::now();
+        let attempted = if self.encrypted_mode {
+            // The guard atomically verifies the original connection tuple before
+            // enqueueing. False means this socket is obsolete; never downgrade.
+            push::enqueue_for_connection(&self.original, "wake", None)
+                .map_err(|_| eyre!("push_enqueue_failed"))?
+        } else if config::legacy_wake_enabled()
+            && push::legacy_connection_is_current(&self.original)
+                .map_err(|_| eyre!("state_unavailable"))?
         {
-            let mut instant = self.push_instant.lock().unwrap();
-            *instant = Instant::now();
-        }
-
-        let url = self.push_endpoint.clone();
-        let res = post_allowed(url, &json!({"urgent": true}), Some("mollysocket")).await;
-        if let Some(tx) = &self.channels.on_push_tx {
-            let _ = tx.unbounded_send(1);
-        }
-        self.assert_push_response(res)
-    }
-
-    /// If we received an error 4409 "connected elsewhere", we send a "delivery check" push notif:
-    /// \* if we receive a 403/404/410, then the endpoint as been removed and we should
-    /// delete the registration
-    /// \* else, the other instance is probably the one that need to unregister, which will disable the registration
-    /// with the same mechanism
-    /// \* if the 2 instances run with a valid endpoint, the user needs to rotate the linked device
-    ///
-    /// We send the test notification, only if we didn't send one during the last [DELIVERY_CHECK_TIMEOUT] period
-    /// to avoid spamming the client
-    async fn push_delivery_check(&self) -> Result<()> {
-        {
-            let mut instant = self.push_instant.lock().unwrap();
-            if instant.elapsed() > DELIVERY_CHECK_TIMEOUT {
-                log::info!("push_delivery_check: We send a notification recently, no need to push a delivery check.");
-                return Ok(());
-            }
-            // We set the last push notif to now - PUSH_TIMEOUT, so if a push notification arrives
-            // between now and now + PUSH_TIMEOUT, it can wake the client correctly
-            // We fallback to now, in case of error, but it shouldn't fail.
-            *instant = Instant::now()
-                .checked_sub(PUSH_TIMEOUT)
-                .unwrap_or(Instant::now());
-        }
-        let url = self.push_endpoint.clone();
-        let res = post_allowed(url, &json!({"code": 4409}), Some("4409")).await;
-        log::trace!("{:?}", res);
-        self.assert_push_response(res)
-    }
-
-    fn assert_push_response(&self, res: Result<reqwest::Response>) -> Result<()> {
-        match res {
-            Err(err) => {
-                if let Some(e) = err.downcast_ref::<reqwest::Error>() {
-                    match e.status() {
-                        Some(StatusCode::FORBIDDEN)
-                        | Some(StatusCode::NOT_FOUND)
-                        | Some(StatusCode::GONE) => {
-                            log::debug!("Got response with status={:?}", e.status());
-                            return Err(err.wrap_err(eyre!(Error::RegistrationRemoved)));
-                        }
-                        _ => (),
-                    }
-                }
-            }
-            Ok(resp) => match resp.status() {
-                StatusCode::FORBIDDEN | StatusCode::NOT_FOUND | StatusCode::GONE => {
-                    log::debug!("Got response with status={:?}", resp.status());
-                    return Err(eyre!(Error::RegistrationRemoved));
-                }
-                _ => (),
-            },
+            // Response codes have no authority over Signal device linkage.
+            let _ = post_allowed::post_legacy_wake(self.push_endpoint.clone()).await;
+            true
+        } else {
+            false
+        };
+        if attempted {
+            metric_tick(&self.channels.on_push_tx);
         }
         Ok(())
     }
 
-    fn waiting_timeout_reached(&self) -> bool {
-        let instant = self.push_instant.lock().unwrap();
-        instant.elapsed() > PUSH_TIMEOUT
+    async fn push_delivery_check(&self) -> Result<()> {
+        if !self.encrypted_mode {
+            return Ok(());
+        }
+        {
+            let mut instant = self
+                .push_instant
+                .lock()
+                .map_err(|_| eyre!("state_unavailable"))?;
+            if instant.elapsed() < DELIVERY_CHECK_TIMEOUT {
+                return Ok(());
+            }
+            *instant = Instant::now();
+        }
+        let _ = push::enqueue_for_connection(&self.original, "status", Some("connection_conflict"))
+            .map_err(|_| eyre!("push_enqueue_failed"))?;
+        Ok(())
+    }
+
+    fn waiting_timeout_reached(&self) -> Result<bool> {
+        Ok(self
+            .push_instant
+            .lock()
+            .map_err(|_| eyre!("state_unavailable"))?
+            .elapsed()
+            > PUSH_TIMEOUT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::{FutureExt, StreamExt};
+
+    #[tokio::test]
+    async fn closed_writer_propagates_from_envelope_acknowledgement() {
+        let mut connection = SignalWebSocket::new(
+            "11111111-1111-4111-8111-111111111111",
+            2,
+            "synthetic-password-only",
+            "https://push.example.test/synthetic",
+            true,
+        )
+        .unwrap();
+        let (sender, receiver) = websocket_mpsc::channel(64);
+        connection.set_websocket_tx(Some(sender));
+        drop(receiver);
+        let result = connection
+            .request_to_envelope(WebSocketRequestMessage {
+                verb: Some("PUT".into()),
+                path: Some("/api/v1/message".into()),
+                body: None,
+                headers: Vec::new(),
+                id: Some(42),
+            })
+            .await;
+        assert_eq!(result.unwrap_err().to_string(), "WriterClosed");
+    }
+
+    #[test]
+    fn immutable_mode_and_exact_raw_endpoint_are_preserved() {
+        let raw = "https://EXAMPLE.test:443";
+        let connection =
+            SignalWebSocket::new("synthetic-id", 2, "synthetic-password", raw, true).unwrap();
+        assert_eq!(connection.original.endpoint, raw);
+        assert_ne!(connection.push_endpoint.as_str(), raw);
+        assert!(connection.encrypted_mode);
+    }
+
+    #[tokio::test]
+    async fn repeated_metrics_do_not_gain_new_reserved_sender_slots() {
+        // futures buffer31 plus its one retained sender slot = exactly32.
+        let (sender, mut receiver) = mpsc::channel(31);
+        let sender = Some(Mutex::new(sender));
+        for _ in 0..10_000 {
+            metric_tick(&sender);
+        }
+        let mut received = 0;
+        while let Some(Some(value)) = receiver.next().now_or_never() {
+            assert_eq!(value, 1);
+            received += 1;
+        }
+        assert_eq!(received, 32);
+        metric_tick(&sender);
+        assert_eq!(receiver.next().now_or_never(), Some(Some(1)));
     }
 }
