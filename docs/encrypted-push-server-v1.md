@@ -78,6 +78,43 @@ creating files. A configuration for isolated checks should use a dedicated
 check supplies this setup without requiring a public provider. Configuration
 names and precedence are implemented in [`src/config.rs`](../src/config.rs).
 
+### Fake Signal websocket
+
+The separate [Signal end-to-end test](../tests/signal_e2e.py) runs the real server
+with `push_only=false` against a local TLS websocket and a local push provider.
+It sends Signal protobuf envelopes, checks their acknowledgements, and
+independently decrypts the resulting encrypted `wake` push. This covers the
+Signal-to-worker path in addition to the CLI checks above.
+
+```sh
+cargo test --locked --features test-signal
+cargo build --locked --features test-signal
+python3 tests/signal_e2e.py --binary target/debug/mollysocket
+CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true cargo build --locked --release --all-features
+python3 tests/check_signal_overrides_absent.py --binary target/release/mollysocket
+```
+
+The `test-signal` feature is off by default. Only development-profile builds
+with that feature and debug assertions accept `test_signal_url` and
+`test_signal_ca`, or their
+`MOLLY_TEST_SIGNAL_URL` and `MOLLY_TEST_SIGNAL_CA` environment equivalents. Both
+must be provided together: a `wss` URL with a loopback IP address and a PEM CA
+file. The fake's CA replaces the pinned Signal root for that test process;
+certificate and hostname verification stay enabled. The test creates its own
+temporary CA, certificate, protected state, and synthetic enrollment.
+
+Normal debug builds and all release-profile builds exclude the override fields
+and TLS selection code, even when release debug assertions are enabled.
+The absence checker inspects the executable and verifies that
+test configuration and environment settings have no effect. CI checks the
+default debug executable and a release built with `--all-features` and debug
+assertions enabled.
+
+[`tests/fake_signal.py`](../tests/fake_signal.py) contains the reusable fake
+websocket and envelope helpers for further Signal-driven integration tests,
+including endpoint updates. These tests do not require live Signal credentials
+or a real distributor, and provider acceptance does not establish device delivery.
+
 ## Configure state and destinations
 
 The image interface uses UID/GID `10001:10001`, state directory
