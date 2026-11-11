@@ -34,6 +34,9 @@ pub async fn run() {
                     let encrypted_mode=enrolled.contains(&co.uuid);
                     if co.forbidden||!config::is_uuid_valid(&co.uuid)||!(encrypted_mode||config::legacy_wake_enabled()){continue}
                     if wanted.len()>=4096{log::warn!("connection_capacity_exceeded");break}
+                    // The endpoint is part of the socket fingerprint, so every endpoint update reconnects
+                    // the Signal socket on purpose; a control frame redelivered after a cancel between
+                    // commit and acknowledgement is a harmless replay.
                     let bytes=serde_json::to_vec(&serde_json::json!([co.device_id,co.password,co.endpoint,encrypted_mode])).expect("state_unavailable");
                     let digest=openssl::sha::sha256(&bytes);
                     wanted.insert(co.uuid.clone(),digest);

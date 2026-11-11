@@ -509,21 +509,24 @@ impl PushStore {
             let old: Subscription = serde_json::from_str(&json)?;
             changed_credentials = device != enrollment.device_id || password != enrollment.password;
             // A control blob authenticates account/device/version/epoch, not
-            // the private password or instance. A fresh key is therefore
-            // required to keep prebuilt future-epoch blobs out of a replacement
-            // lifecycle, even when the account and device stay the same.
-            if enrollment.control_key.is_some()
-                && control_key == enrollment.control_key
-                && (changed_credentials || old.instance != enrollment.subscription.instance)
-            {
-                return Err(StoreError::InvalidEnrollment);
-            }
-            if enrollment.subscription.subscription_epoch == old.subscription_epoch
+            // the private password or instance, and the phone allocates control
+            // epochs above anything it has already built while a private import
+            // must be exactly the server epoch + 1. A pre-built higher-epoch
+            // frame under a reused key could therefore roll back a newer
+            // private import. Every state-changing keyed import needs a fresh
+            // key; only the idempotent import may repeat the current one.
+            let unchanged = enrollment.subscription.subscription_epoch == old.subscription_epoch
                 && old == enrollment.subscription
                 && !changed_credentials
                 && control_key == enrollment.control_key
-                && state == "active"
+                && state == "active";
+            if enrollment.control_key.is_some()
+                && control_key == enrollment.control_key
+                && !unchanged
             {
+                return Err(StoreError::InvalidEnrollment);
+            }
+            if unchanged {
                 disposition = EnrollmentDisposition::Unchanged;
             } else if old.subscription_epoch < MAX_JSON_INTEGER
                 && enrollment.subscription.subscription_epoch == old.subscription_epoch + 1
@@ -1876,6 +1879,19 @@ mod tests {
         store.enroll(&e, NOW).unwrap();
         let mut endpoint_rotation = rotate(&e, 2);
         endpoint_rotation.subscription.endpoint.push_str("-new");
+        // Even an endpoint-only private change needs a fresh key.
+        assert_eq!(
+            store.enroll(&endpoint_rotation, NOW + 1),
+            Err(StoreError::InvalidEnrollment)
+        );
+        // The idempotent import may repeat the current key.
+        let mut repeat = e.clone();
+        repeat.request_id = id(77);
+        assert_eq!(
+            store.enroll(&repeat, NOW + 1).unwrap().disposition,
+            EnrollmentDisposition::Unchanged
+        );
+        endpoint_rotation.control_key = Some(URL_SAFE_NO_PAD.encode([98u8; 32]));
         store.enroll(&endpoint_rotation, NOW + 1).unwrap();
         assert_eq!(
             store
@@ -1883,8 +1899,49 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .control_key,
-            e.control_key.unwrap()
+            endpoint_rotation.control_key.unwrap()
         );
+    }
+
+    #[test]
+    fn same_key_private_import_cannot_be_rolled_back_by_prebuilt_control_frames() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let a = keyed_enrollment();
+        store.enroll(&a, NOW).unwrap();
+        let key = a.control_key.clone().unwrap();
+        // The phone built frames for epochs 2 (endpoint B) and 3 (B2) while the
+        // server was offline. Meanwhile the user privately imports endpoint C at
+        // epoch 2 with the same key.
+        let mut c = rotate(&a, 2);
+        c.subscription.endpoint.push_str("-c");
+        assert_eq!(
+            store.enroll(&c, NOW + 1),
+            Err(StoreError::InvalidEnrollment)
+        );
+        assert!(store.receipt_for(&c).unwrap().is_none());
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(a.subscription.clone())
+        );
+        // With a fresh key the import succeeds and the old frames are dead.
+        c.control_key = Some(URL_SAFE_NO_PAD.encode([42u8; 32]));
+        store.enroll(&c, NOW + 1).unwrap();
+        let co = connection(&c);
+        for epoch in [2u64, 3] {
+            let mut frame = c.subscription.clone();
+            frame.subscription_epoch = epoch;
+            frame.endpoint = format!("https://push.example.test/frame-{epoch}");
+            let status = confirmation(&frame, 60 + epoch, NOW + 2);
+            assert!(store
+                .apply_endpoint_update(&co, &key, &frame, &[epoch as u8; 32], &status, NOW + 2)
+                .is_err());
+        }
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(c.subscription)
+        );
+        assert_eq!(store.pending_count(None).unwrap(), 0);
     }
 
     #[test]

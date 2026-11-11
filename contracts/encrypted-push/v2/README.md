@@ -38,11 +38,16 @@ a fresh control key; the server rejects reuse of the current key for those
 changes with `invalid_enrollment`. A new enrollment lifecycle, including
 removal/reprovisioning or backup recovery, MUST also generate a fresh control
 key on the phone. The server cannot
-detect reuse of a key from state that has already been deleted. A private update
-limited to endpoint/push keys/auth may retain the key; previously accepted
-frames remain obsolete by epoch, but a prebuilt higher-epoch frame under that
-same key remains authentic. Rotate the control key through private import when
-invalidating all outstanding control messages is required.
+detect reuse of a key from state that has already been deleted. Every keyed
+private import that changes state, including an import limited to
+endpoint/push keys/auth, MUST use a fresh control key; the server rejects reuse
+of the current key for any state-changing import with `invalid_enrollment`. Only
+the idempotent import (identical subscription, credentials and key, active
+state) may repeat the current key. The reason is that the phone allocates
+control epochs above anything it has already built, while a private import must
+be exactly the server epoch + 1: a pre-built higher-epoch frame under a reused
+key would remain authentic and could roll back the newer private import.
+Accepted control frames keep the key, so earlier frames stay obsolete by epoch.
 
 The existing password, account, device, instance, encryption requirement,
 capabilities, event negotiation and control key remain private-import-only.
@@ -93,6 +98,40 @@ non-infinite P-256 point. The endpoint obeys the unchanged v1 URL, exact-origin,
 DNS/address and redirect rules. The complete frame is at most 3146 bytes
 (46-byte header + 12-byte nonce + 3072-byte plaintext + 16-byte tag). Reject
 truncated or oversized frames without allocating unbounded decrypted data.
+
+Placing the blob in the Signal send. The phone sends to its own account with
+authenticated (not sealed-sender) `PUT /v1/messages/{own ACI}`, a dedicated
+request with `urgent=false`, whose `messages` array has one entry per linked
+device, each with `type`, `destinationDeviceId`, `destinationRegistrationId` and
+`content`. CollieSocket's entry uses `type` 1 (`DOUBLE_RATCHET`, named
+`CIPHERTEXT` in older Signal protocol definitions and the project spec; not 3
+`PREKEY_MESSAGE` and not 6 sealed sender), `destinationDeviceId` equal to the
+enrolled CollieSocket device ID, and `content` equal to the standard padded
+base64 (RFC 4648, with `=`) of the frame bytes above, with no second encryption
+and no extra padding; CollieSocket never reads the envelope type. The Signal
+server accepts an entry only if `destinationRegistrationId` equals the
+registration ID of that linked device and otherwise answers 410 (stale
+devices). CollieSocket is never told that ID, and the enrollment file does not
+carry it: the phone generated it when it created the linked device
+(`KeyHelper.generateRegistrationId` in `MollySocketRepository.createDevice`) and
+reads it back as the remote registration ID of its Signal session with
+CollieSocket's device, exactly as an ordinary send fills this field. That
+session is created from the device's pre-key bundle (`GET /v2/keys/{ACI}/{device
+ID}`, whose `registrationId` is the value), which the Collie IM link code does
+at creation; if the session is missing, fetch the bundle and use its
+`registrationId`, and never encrypt anything to that session. Every other linked
+device gets an ordinary entry built from its own session: its own registration
+ID and a normal Signal ciphertext (type 1, or 3 for a new session) of an
+ordinary padded `Content` carrying a harmless sync message. The client omits
+devices with no session, so the server's 409 (mismatched devices) lists them.
+On 409, archive sessions for extra devices, fetch pre-key bundles for missing
+devices and rebuild all entries. On 410, archive the sessions of the stale
+devices, refetch their bundles to learn the new registration IDs and rebuild all
+entries; if CollieSocket's device was stale, its registration ID changed (the
+device was re-linked), so reread it as above and, if the device ID no longer
+matches the enrollment, stop and recover through private import. In both retries
+CollieSocket's entry keeps `urgent=false`, type 1 and the identical blob; only
+its `destinationRegistrationId` may change.
 
 Only successful authenticated decryption establishes control authority.
 Envelope source account/device, envelope type, timestamps and `urgent` are not
@@ -172,7 +211,7 @@ is substituted with this control blob. Never substitute a primary-device copy,
 broadcast the blob to other devices, or splice it into an unrelated user send.
 
 The substitution must run when building the initial per-device request and
-again whenever the mismatched-device retry rebuilds recipients. Preserve the
+again whenever a mismatched-device (409) or stale-device (410) retry rebuilds recipients. Preserve the
 same CollieSocket ID, exact blob and `urgent=false` flag through that retry;
 newly discovered other devices get the ordinary encrypted sync copy. If the
 CollieSocket device is absent, retain pending state for recovery rather than
@@ -186,6 +225,13 @@ Signal send success, websocket acknowledgment, provider 2xx, status from an old
 epoch/endpoint or unrelated status does not clear pending state. A subsequent
 endpoint rotation may supersede the pending update using a newer epoch and a
 fresh nonce/blob; delayed old confirmations cannot clear that newer operation.
+
+A missing confirmation does not always mean lost delivery. An authenticated
+update whose endpoint fails the server's destination allow-list or a temporary
+DNS lookup is acknowledged to Signal and dropped without a confirmation, so the
+phone should treat prolonged silence as possibly a policy rejection, not only
+a lost message. Retrying the identical blob later (DNS) or sending a new epoch
+with a different endpoint (allow-list) recovers.
 
 ## Files and executable checks
 
