@@ -1,0 +1,262 @@
+{
+  "record_version": 1,
+  "disclosure": "ChatGPT recorded fresh validation of the structural library extraction; this is not Tauri/native-host acceptance.",
+  "base_commit": "011dba764f0b7507b708a2824b43ea56fa89ddef",
+  "implementation_paths": [
+    "src/main.rs",
+    "src/lib.rs"
+  ],
+  "source_commit": "reported in the containing published commit; no self hash embedded",
+  "rust": "1.90.0 (1159e78c4 2025-09-14)",
+  "target": "x86_64-unknown-linux-gnu",
+  "tests": [
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo test --locked",
+      "result": "PASS",
+      "passed": 60,
+      "failed": 0,
+      "ignored": 2,
+      "log": "unit-tests.log",
+      "ignored_scope": "Explicit opt-in external Signal TLS probes"
+    },
+    {
+      "command": "cargo build --locked",
+      "result": "PASS",
+      "profile": "dev"
+    },
+    {
+      "command": "python3 tests/server_cli.py --binary target/debug/mollysocket",
+      "result": "PASS",
+      "scenario_groups": 14,
+      "evidence": "cli-debug.json"
+    },
+    {
+      "command": "python3 contracts/encrypted-push/v1/tools/conformance.py",
+      "result": "PASS",
+      "schema_cases": 76,
+      "reference_receiver_cases": 14,
+      "immutable_file_hashes": 80
+    },
+    {
+      "command": "git diff --check",
+      "result": "PASS"
+    }
+  ],
+  "source_inputs": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "9156abf0076451b56c5098acb0d1bf6f6e49800a3e6694f9bd33c0c7482c3243"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "b88101e05e76f440e65f31bda413890f54f583196d15eda5d87a73d1ecef2ec7"
+    },
+    {
+      "path": "crates/colliesocket-push/Cargo.lock",
+      "sha256": "070faa4e82896da8929a4d9e229cae08cbe3ed6edbdf2de28135890654ce4aa8"
+    },
+    {
+      "path": "crates/colliesocket-push/Cargo.toml",
+      "sha256": "8e2522e284d8d95a924114ba3af5887b9fda17c61f74e030f1d7ca2742f310d9"
+    },
+    {
+      "path": "crates/colliesocket-push/evidence/conformance-rebuild.txt",
+      "sha256": "34e8f74d41b170a41afb13fcd3a6f3d1f6572cb6dcaa5f27567cf3778be72088"
+    },
+    {
+      "path": "crates/colliesocket-push/evidence/rebuild.json",
+      "sha256": "d3431335e895a56486e21b6eb916366661b63a48d631a930e1aad77febdcbbf1"
+    },
+    {
+      "path": "crates/colliesocket-push/examples/generate_fixtures.rs",
+      "sha256": "6c3159734066cb0c69dc02d97854bcf7f95965df868e638e0db8dff56ed91800"
+    },
+    {
+      "path": "crates/colliesocket-push/fixtures/metadata.json",
+      "sha256": "4c1aeaafbd7aa1ea874d96e37e64add30fb691d9077222da02d63bd9deb30eb7"
+    },
+    {
+      "path": "crates/colliesocket-push/fixtures/wake-v1.json",
+      "sha256": "a55fffe0deb3709d21871bba24847e0788e535563f6967b8b75caaa3498d81d6"
+    },
+    {
+      "path": "crates/colliesocket-push/src/lib.rs",
+      "sha256": "32e9122d1158b902472e4a127cdfdda548dcb4ee6394a252f63fbece647a74b5"
+    },
+    {
+      "path": "crates/colliesocket-push/tests/encryption.rs",
+      "sha256": "b5a0609520663cae0232407425817d4330b8a8cb99acec3921792f1d4afe8ee5"
+    },
+    {
+      "path": "crates/colliesocket-push/tests/support/mod.rs",
+      "sha256": "26f78ad0f3932919c38ab380275153a1e9fc467ad186c89ccc80e565b024af9a"
+    },
+    {
+      "path": "crates/colliesocket-push/tools/check_fixtures.py",
+      "sha256": "a15de4d19cf3d78c45c8cb7341cea246f932bdebb6866a5057061b61d3f8ef6b"
+    },
+    {
+      "path": "crates/colliesocket-push/tools/conformance.sh",
+      "sha256": "ecfb98611d39b17519c17fccb3e126d9b6c522e657a1bb951def6c016b2873d6"
+    },
+    {
+      "path": "crates/colliesocket-push/tools/requirements.txt",
+      "sha256": "71ca1efbcefaf7309a1e4bb27ccd43e687b6e593da00cf6b08ef19c7a12d2561"
+    },
+    {
+      "path": "src/build_proto.rs",
+      "sha256": "bb6c760b3acd2ca5862156e7ceaa001dfd1385a7df4d21ef2d0c518edb44bb1f"
+    },
+    {
+      "path": "src/cli.rs",
+      "sha256": "fb38f26190658b93102d703759db39ea43278594539ec3d994053aacba6ce587"
+    },
+    {
+      "path": "src/cli/connection.rs",
+      "sha256": "e60faf06fd4c4381f5993509cc3b17eb6e214748acf1508056f0c2b4f7045717"
+    },
+    {
+      "path": "src/cli/enrollment.rs",
+      "sha256": "4e7efad226b786698d89c6cb08d240ebcf3affefd29271a0d6584fb2a6c3f849"
+    },
+    {
+      "path": "src/cli/push.rs",
+      "sha256": "cf2f878ddd9a42f60ba3b7d9f8d0054d5423d3a4bcb492f1d323325e9d4c1799"
+    },
+    {
+      "path": "src/cli/qrcode.rs",
+      "sha256": "16486ccfae1f12fcbc61eb8de130242380785ddb15208fe7bb4f72f3cb19a1ce"
+    },
+    {
+      "path": "src/cli/server.rs",
+      "sha256": "9371bd35aef60c51a5c274babc3759f94351484dd2cdaf4329c7aae9a611ec6b"
+    },
+    {
+      "path": "src/cli/test.rs",
+      "sha256": "7f24b897c874856c8240fc95135c9f0944350cffe81d9d53816de1a22dccd069"
+    },
+    {
+      "path": "src/cli/vapid.rs",
+      "sha256": "14fb7e4b436a87b30bac863cdd4fc473a067f36f98bef7f5a7bcb884135546bb"
+    },
+    {
+      "path": "src/config.rs",
+      "sha256": "59924d85ea147866fdbd489102b113b828d6bf6fb3a4a493853d33062d687eb3"
+    },
+    {
+      "path": "src/db.rs",
+      "sha256": "99fee90857b52955611b24b520db7809bf4c875b9a1cac66b6b5d3a7ef4b7a65"
+    },
+    {
+      "path": "src/enrollment.rs",
+      "sha256": "98380ee07bac4f216d4daddafc900ba8a8edde172761516fc1fe7ad5de6d7ef1"
+    },
+    {
+      "path": "src/lib.rs",
+      "sha256": "3e7fcffc78db5731d38c6f8e56d3a1f054b6493e75fc7395bc7abaf025c648d6"
+    },
+    {
+      "path": "src/main.rs",
+      "sha256": "a7caa012a56d3866bae15d98e24b2fe2f92549a578babaaf11baae9c4659c29d"
+    },
+    {
+      "path": "src/push.rs",
+      "sha256": "f8173300db2adb4c39b63586bed7b683f3ad25580fc0e2bf031ce0b94545cffd"
+    },
+    {
+      "path": "src/push_store.rs",
+      "sha256": "b617a7f4d2de520037d62901ac9f83c2192df825c66172f9bdf6468c2663e675"
+    },
+    {
+      "path": "src/qrcode.rs",
+      "sha256": "ff5066959de3775576e7b6a997a5af8d45ab5ed3df2b4b263df2043611a62d2e"
+    },
+    {
+      "path": "src/server.rs",
+      "sha256": "0539657945cfc97e6b9aba3193dd5f0ff45ac0f5c5b124a582041655ccb3f883"
+    },
+    {
+      "path": "src/server/connections.rs",
+      "sha256": "d139ec11a218d5f01a5c16248ac87a636d1003df7b581dcbec144609339533e8"
+    },
+    {
+      "path": "src/server/metrics.rs",
+      "sha256": "923f1735a265f240a798c67d43a6130b1c56e08b8ea3bc356ce6ae9eba330ba9"
+    },
+    {
+      "path": "src/server/ready.rs",
+      "sha256": "fc191f424cdf22b86bb837277f893320503c1141e4f4cbf6430b6ffef8dfc0f9"
+    },
+    {
+      "path": "src/server/web.rs",
+      "sha256": "bc8b6cef5fd3bca0408c6508d1a2a3bfc1f508c17001732e121e02de8d3a17a8"
+    },
+    {
+      "path": "src/server/web/html.rs",
+      "sha256": "59b211362c90a9b766adb7fe5a444e823f36d3f9ec8770dbc5914114ebbc47c2"
+    },
+    {
+      "path": "src/utils.rs",
+      "sha256": "abb6cdb96b6dd9a7bc795fb6081afc66712c3686421655b26581d0d19a226a1a"
+    },
+    {
+      "path": "src/utils/post_allowed.rs",
+      "sha256": "2bcddf741e8216499500a23e94392e074a5a45831c20a519a03586a9271cfa4a"
+    },
+    {
+      "path": "src/vapid.rs",
+      "sha256": "31a5c7fa762b4c91c76266cb2be924cd77b21246c7a011e825653d63771ec4fa"
+    },
+    {
+      "path": "src/ws.rs",
+      "sha256": "db4d3a76019039d0e387332c332ed7caafd17312938282c48efb7cd9f3132100"
+    },
+    {
+      "path": "src/ws/proto_signalservice.rs",
+      "sha256": "bc16d4749f957bfe9838ba9394865f23f71c878b78013003950f6271f5b9ed28"
+    },
+    {
+      "path": "src/ws/proto_websocketresources.rs",
+      "sha256": "b2c36d819302fbdfbdf221c7f0126dcae85462ef571891064168d9e4440c237f"
+    },
+    {
+      "path": "src/ws/signalwebsocket.rs",
+      "sha256": "bb8bbd60db536d1f6d2ee854ac807070bc8264438f0dd355662ed3463ee44a3b"
+    },
+    {
+      "path": "src/ws/tls.rs",
+      "sha256": "ef413ab945d0e74e1dea0b49151802a6d6e731c83e510b2792c11002ca3543e4"
+    },
+    {
+      "path": "src/ws/websocket_connection.rs",
+      "sha256": "d4063a3db34b7ab93f0ca057ae6635c748a382b3f407254138199ed6ca1cd5c9"
+    },
+    {
+      "path": "tests/server_cli.py",
+      "sha256": "571722d2cff0adad0708d39faf74a938b4333f07af04c27c0aa9f62d12117778"
+    }
+  ],
+  "tested_binary": {
+    "path": "target/debug/mollysocket",
+    "sha256": "741aa34adb11c9b21b6fce68e4be90b2f16f229dad31b67cf16ff82d183f79b6",
+    "profile": "dev",
+    "not_a_reproducible_build_claim": true
+  },
+  "environment_setup": "Rust1.90 installed in a workspace-owned toolchain. Initial compilation could not create /tmp files; rerun succeeded with a writable workspace TMPDIR. This was a compiler environment failure before tests ran.",
+  "not_run": [
+    "Optimized build of this source delta",
+    "Tauri window/build/IPC",
+    "Android build, device, WebView or foreground service",
+    "Linux unifiedpush connector interoperability",
+    "New provider/distributor implementation",
+    "KDE desktop notification integration",
+    "Windows/macOS host builds",
+    "Tunnel or remote pairing",
+    "Shipping security acceptance"
+  ],
+  "scope": "No dependency, frozen contract, database schema, network behavior or platform support change is intended. run_cli remains CLI-only and unsuitable for embedding."
+}
