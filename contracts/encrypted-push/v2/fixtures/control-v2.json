@@ -1,0 +1,12 @@
+{
+  "synthetic_only": true,
+  "description": "Public deterministic interoperability vector. Never use this key or nonce in production.",
+  "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "device_id": 2,
+  "subscription_epoch": 2,
+  "control_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "nonce": "AAECAwQFBgcICQoL",
+  "aad_hex": "434f4c4c4945534f434b45542d4354524c02aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa000000020000000000000002",
+  "plaintext_utf8": "{\"auth\":\"MDEyMzQ1Njc4OTo7PD0-Pw\",\"endpoint\":\"https://push.example.invalid/rotated-endpoint\",\"p256dh\":\"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4\"}",
+  "frame_base64url": "Q09MTElFU09DS0VULUNUUkwCqqqqqqqqSqqKqqqqqqqqqgAAAAIAAAAAAAAAAgABAgMEBQYHCAkKCzwgt26xjeAhrwzTzsikAjyymO1XxDQLEw83obUwOXeQLTLLksuxffEa0F3Xqu9cTJ4qWqJ1ptapV7lPYXmOhYKVEq8UpbBKCHh72AGb7nqNXKesDBITPAGTibzgWoCLuP2cMcSeY4pZyGRNwH87fhr0ADT5krNt7gnPLZnYlSttjX9WkJmdvR9tmSDQaKADkFWMgnpPeKVnzQa_L4yGq6b-o_x_kK-mDZA1ucKv2sHzq52YUuDlB9MsnqmwRefKT88E7XznPi-bhuU7DqFRYA"
+}
