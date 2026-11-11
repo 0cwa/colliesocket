@@ -30,6 +30,13 @@ struct Config {
     vapid_privkey: Option<String>,
     vapid_key_file: Option<String>,
     signal_env: SignalEnvironment,
+    #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+    test_signal_url: Option<String>,
+    #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+    test_signal_ca: Option<String>,
+    #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+    #[serde(skip)]
+    test_signal_root: Option<native_tls::Certificate>,
     allowed_endpoints: Vec<String>,
     allowed_uuids: Vec<String>,
     db: String,
@@ -67,6 +74,12 @@ impl Default for Config {
             vapid_privkey: None,
             vapid_key_file: None,
             signal_env: SignalEnvironment::Production,
+            #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+            test_signal_url: None,
+            #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+            test_signal_ca: None,
+            #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+            test_signal_root: None,
             allowed_endpoints: vec![String::from("*")],
             allowed_uuids: vec![String::from("*")],
             db: String::from("./mollysocket.db"),
@@ -119,6 +132,14 @@ pub fn get_vapid_privkey() -> Option<&'static str> {
 
 pub fn get_ws_endpoint() -> &'static str {
     get_cfg().get_ws_endpoint()
+}
+
+#[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+pub(crate) fn get_test_signal_root() -> Option<native_tls::Certificate> {
+    // TLS unit tests can build the pinned connector before configuration loads.
+    CONFIG
+        .get()
+        .and_then(|config| config.test_signal_root.clone())
 }
 
 pub async fn is_endpoint_valid(url: &str) -> bool {
@@ -181,6 +202,11 @@ pub fn load_config(cli_config_path: Option<PathBuf>) {
         }
         if config.ready_port == 0 {
             eprintln!("invalid_configuration");
+            process::exit(1);
+        }
+        #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+        if config.load_test_signal_root().is_err() {
+            eprintln!("invalid_test_signal_configuration");
             process::exit(1);
         }
         config
@@ -271,12 +297,61 @@ impl Config {
         }
     }
 
-    fn get_ws_endpoint(&self) -> &'static str {
+    fn get_ws_endpoint(&self) -> &str {
+        #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+        if let Some(endpoint) = &self.test_signal_url {
+            return endpoint;
+        }
         match self.signal_env {
             SignalEnvironment::Production => "wss://chat.signal.org/v1/websocket/",
             SignalEnvironment::Staging => "wss://chat.staging.signal.org/v1/websocket/",
         }
     }
+
+    #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+    fn valid_test_signal_options(&self) -> bool {
+        let (raw_url, ca) = match (&self.test_signal_url, &self.test_signal_ca) {
+            (None, None) => return true,
+            (Some(raw_url), Some(ca)) => (raw_url, ca),
+            _ => return false,
+        };
+        if ca.is_empty()
+            || raw_url.len() > 2048
+            || !raw_url.is_ascii()
+            || raw_url.bytes().any(|b| b <= 32 || b == 127)
+            || raw_url.contains(['\\', '@'])
+        {
+            return false;
+        }
+        let Ok(url) = url::Url::parse(raw_url) else {
+            return false;
+        };
+        let loopback = match url.host() {
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            _ => false,
+        };
+        url.scheme() == "wss"
+            && loopback
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url.port_or_known_default().is_some_and(|port| port != 0)
+    }
+
+    #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+    fn load_test_signal_root(&mut self) -> Result<(), ()> {
+        if !self.valid_test_signal_options() {
+            return Err(());
+        }
+        if let Some(path) = &self.test_signal_ca {
+            let pem = std::fs::read(path).map_err(|_| ())?;
+            self.test_signal_root = Some(native_tls::Certificate::from_pem(&pem).map_err(|_| ())?);
+        }
+        Ok(())
+    }
+
     async fn is_url_endpoint_valid(&self, url: &url::Url) -> EndpointValidity {
         if !matches!(url.scheme(), "http" | "https")
             || url.host().is_none()
@@ -341,6 +416,118 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_signal_endpoints_are_pinned() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.get_ws_endpoint(), "wss://chat.signal.org/v1/websocket/");
+        cfg.signal_env = SignalEnvironment::Staging;
+        assert_eq!(
+            cfg.get_ws_endpoint(),
+            "wss://chat.staging.signal.org/v1/websocket/"
+        );
+    }
+
+    #[cfg(not(all(feature = "test-signal", debug_assertions, colliesocket_test_signal)))]
+    #[test]
+    fn test_signal_overrides_are_compiled_out() {
+        let cfg: Config = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::string(
+                r#"
+                test_signal_url = "wss://127.0.0.1:12345/v1/websocket/"
+                test_signal_ca = "/nonexistent/test-ca.pem"
+                "#,
+            ))
+            .extract()
+            .unwrap();
+        assert_eq!(cfg.get_ws_endpoint(), "wss://chat.signal.org/v1/websocket/");
+        let serialized = serde_json::to_value(cfg).unwrap();
+        assert!(serialized.get("test_signal_url").is_none());
+        assert!(serialized.get("test_signal_ca").is_none());
+    }
+
+    #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+    #[test]
+    fn test_signal_requires_both_options_and_loopback_wss() {
+        let mut cfg = Config::default();
+        assert!(cfg.valid_test_signal_options());
+        cfg.test_signal_url = Some("wss://127.0.0.1:12345/v1/websocket/".into());
+        assert!(!cfg.valid_test_signal_options());
+        cfg.test_signal_ca = Some("/synthetic-test-ca.pem".into());
+        assert!(cfg.valid_test_signal_options());
+        assert_eq!(
+            cfg.get_ws_endpoint(),
+            cfg.test_signal_url.as_deref().unwrap()
+        );
+        assert!(!format!("{cfg:?}").contains("synthetic-test-ca"));
+        assert!(!format!("{cfg:?}").contains("wss://"));
+        cfg.test_signal_url = None;
+        assert!(!cfg.valid_test_signal_options());
+        for url in [
+            "wss://127.0.0.1:12345/v1/websocket/",
+            "wss://[::1]:12345/v1/websocket/",
+        ] {
+            cfg.test_signal_url = Some(url.into());
+            assert!(cfg.valid_test_signal_options());
+        }
+        for url in [
+            "",
+            "ws://127.0.0.1:12345/v1/websocket/",
+            "https://127.0.0.1:12345/v1/websocket/",
+            "wss://chat.signal.org/v1/websocket/",
+            "wss://localhost:12345/v1/websocket/",
+            "wss://192.0.2.1:12345/v1/websocket/",
+            "wss://[::]:12345/v1/websocket/",
+            "wss://127.0.0.1:0/v1/websocket/",
+            "wss://user:password@127.0.0.1:12345/v1/websocket/",
+            "wss://@127.0.0.1:12345/v1/websocket/",
+            "wss://127.0.0.1:12345/v1/websocket/?token=value",
+            "wss://127.0.0.1:12345/v1/websocket/#fragment",
+            "wss://127.0.0.1:12345/\\v1/websocket/",
+            " wss://127.0.0.1:12345/v1/websocket/",
+            "wss://127.0.0.1:12345/v1/websocket/\n",
+        ] {
+            cfg.test_signal_url = Some(url.into());
+            assert!(!cfg.valid_test_signal_options());
+        }
+        cfg.test_signal_url = Some("wss://127.0.0.1:12345/v1/websocket/".into());
+        cfg.test_signal_ca = Some(String::new());
+        assert!(!cfg.valid_test_signal_options());
+    }
+
+    #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
+    #[test]
+    fn test_signal_ca_is_loaded_and_invalid_files_fail_closed() {
+        let directory = std::env::temp_dir().join(format!(
+            "colliesocket-test-ca-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("root.pem");
+        let mut cfg = Config {
+            test_signal_url: Some("wss://127.0.0.1:12345/v1/websocket/".into()),
+            test_signal_ca: Some(path.to_str().unwrap().into()),
+            ..Config::default()
+        };
+        assert!(cfg.load_test_signal_root().is_err());
+        std::fs::write(&path, b"not a PEM certificate").unwrap();
+        assert!(cfg.load_test_signal_root().is_err());
+        let pem = include_bytes!("ws/certs/signal-messenger.pem");
+        std::fs::write(&path, pem).unwrap();
+        cfg.load_test_signal_root().unwrap();
+        assert_eq!(
+            cfg.test_signal_root.as_ref().unwrap().to_der().unwrap(),
+            native_tls::Certificate::from_pem(pem)
+                .unwrap()
+                .to_der()
+                .unwrap()
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     fn test_config(uuid: &str, endpoint: &str) -> Config {
         let allowed_uuids = vec![String::from(uuid)];
