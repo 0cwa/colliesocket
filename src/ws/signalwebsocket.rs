@@ -360,15 +360,15 @@ impl SignalWebSocket {
                 None,
             )
             .map_err(|_| eyre!("push_enqueue_failed"))?
-        } else if config::legacy_wake_enabled()
-            && push::legacy_connection_is_current(&self.original)
-                .map_err(|_| eyre!("state_unavailable"))?
-        {
-            // Response codes have no authority over Signal device linkage.
-            let _ = post_allowed::post_legacy_wake(self.push_endpoint.clone()).await;
-            true
         } else {
-            false
+            // Keep the legacy authorization and bounded provider request in
+            // one SQLite writer transaction, shared with encrypted imports.
+            push::with_legacy_dispatch(&self.original, || {
+                post_allowed::post_legacy_wake(self.push_endpoint.clone())
+            })
+            .await
+            .map_err(|_| eyre!("state_unavailable"))?
+            .is_some()
         };
         if attempted {
             metric_tick(&self.channels.on_push_tx);

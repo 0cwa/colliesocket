@@ -12,7 +12,7 @@ use openssl::{
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::{collections::HashSet, fmt, fs, path::Path, time::Duration};
+use std::{collections::HashSet, fmt, fs, future::Future, path::Path, time::Duration};
 
 pub const SCHEMA_VERSION: u32 = 4;
 pub const MAX_JSON_INTEGER: u64 = 9_007_199_254_740_991;
@@ -27,6 +27,8 @@ pub const CLOCK_TOLERANCE: i64 = 60;
 pub const LEASE_SECONDS: i64 = 30;
 pub const MAX_ATTEMPTS: u32 = 4;
 pub const CONTROL_STATUS_RETRY_SECONDS: i64 = 30;
+pub const LEGACY_DISPATCH_TIMEOUT: Duration = Duration::from_secs(10);
+const SQLITE_WRITE_WAIT: Duration = Duration::from_secs(15);
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -455,7 +457,10 @@ impl PushStore {
         let path = path.as_ref();
         protect_path(path)?;
         let mut db = Connection::open(path)?;
-        db.busy_timeout(Duration::from_secs(5))?;
+        // Legacy dispatch holds SQLite's database-wide writer reservation for
+        // at most the transport's 10-second request timeout. Let imports wait
+        // through that request, with a bounded margin for scheduling/commit.
+        db.busy_timeout(SQLITE_WRITE_WAIT)?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version > SCHEMA_VERSION {
             return Err(StoreError::FutureSchema);
@@ -755,17 +760,36 @@ impl PushStore {
             .transpose()
     }
 
-    /// Only an explicitly legacy-mode worker may call this. Encrypted workers
-    /// must never use a missing enrollment as a reason to fall back to plaintext.
-    pub fn legacy_connection_is_current(
-        &self,
-        account_id: &str,
-        device_id: u32,
-        password: &str,
-        endpoint: &str,
-    ) -> Result<bool> {
-        Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM connections c WHERE c.uuid=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND NOT EXISTS(SELECT 1 FROM encrypted_subscriptions s WHERE s.account_id=c.uuid))",
-            params![account_id,device_id,password,endpoint], |r| r.get(0))?)
+    /// Serialize a legacy authorization and its bounded dispatch against every
+    /// encrypted import. SQLite's IMMEDIATE transaction is shared across
+    /// processes; its writer lock is database-wide, so other accounts' writes
+    /// also wait for this request. The transport must bound `dispatch`.
+    pub(crate) async fn with_legacy_dispatch<F, Fut, T>(
+        &mut self,
+        co: &crate::db::Connection,
+        dispatch: F,
+    ) -> Result<Option<T>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM connections c WHERE c.uuid=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND NOT EXISTS(SELECT 1 FROM encrypted_subscriptions s WHERE s.account_id=c.uuid))",
+            params![co.uuid, co.device_id, co.password, co.endpoint],
+            |r| r.get(0),
+        )?;
+        if !current {
+            return Ok(None);
+        }
+
+        // The authorization remains protected until the request future ends.
+        // post_legacy_wake bounds DNS, policy checks, and HTTP to 10 seconds.
+        let outcome = dispatch().await;
+        tx.commit()?;
+        Ok(Some(outcome))
     }
 
     pub fn account_state(&self, account_id: &str) -> Result<Option<AccountState>> {
@@ -1319,10 +1343,24 @@ mod tests {
     use super::*;
     use openssl::ec::{EcKey, PointConversionForm};
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-    use std::{path::PathBuf, sync::OnceLock};
+    use std::{
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            OnceLock,
+        },
+    };
 
     const NOW: i64 = 1_800_000_000;
     const ACCOUNT: &str = "11111111-1111-4111-8111-111111111111";
+    static SQLITE_BUSY_OBSERVED: AtomicBool = AtomicBool::new(false);
+    static SQLITE_BUSY_STOP: AtomicBool = AtomicBool::new(false);
+
+    fn observe_sqlite_busy(_: i32) -> bool {
+        SQLITE_BUSY_OBSERVED.store(true, Ordering::Release);
+        std::thread::sleep(Duration::from_millis(1));
+        !SQLITE_BUSY_STOP.load(Ordering::Acquire)
+    }
 
     struct TestDir(PathBuf);
     impl TestDir {
@@ -3179,21 +3217,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn legacy_snapshot_fails_closed_after_upgrade_removal_or_credential_changes() {
+    async fn try_legacy_dispatch(store: &mut PushStore, co: &crate::db::Connection) -> Option<()> {
+        store
+            .with_legacy_dispatch(co, || std::future::ready(()))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn legacy_dispatch_fails_closed_after_upgrade_removal_or_credential_changes() {
         let dir = TestDir::new();
         let mut store = dir.store();
         let e = enrollment();
-        let current = |s: &PushStore| {
-            s.legacy_connection_is_current(
-                ACCOUNT,
-                e.device_id,
-                &e.password,
-                &e.subscription.endpoint,
-            )
-            .unwrap()
-        };
-        assert!(!current(&store));
+        let legacy = crate::db::Connection::new(
+            e.account_id.clone(),
+            e.device_id,
+            e.password.clone(),
+            e.subscription.endpoint.clone(),
+        );
+        assert_eq!(try_legacy_dispatch(&mut store, &legacy).await, None);
         store
             .db
             .execute(
@@ -3206,34 +3248,145 @@ mod tests {
                 ],
             )
             .unwrap();
-        assert!(current(&store));
-        assert!(!store
-            .legacy_connection_is_current(ACCOUNT, 3, &e.password, &e.subscription.endpoint)
-            .unwrap());
-        assert!(!store
-            .legacy_connection_is_current(
-                ACCOUNT,
-                2,
-                "different-password",
-                &e.subscription.endpoint
-            )
-            .unwrap());
-        assert!(!store
-            .legacy_connection_is_current(ACCOUNT, 2, &e.password, "https://different.test/")
-            .unwrap());
+        assert_eq!(try_legacy_dispatch(&mut store, &legacy).await, Some(()));
+        let wrong_device = crate::db::Connection::new(
+            e.account_id.clone(),
+            3,
+            e.password.clone(),
+            e.subscription.endpoint.clone(),
+        );
+        let wrong_password = crate::db::Connection::new(
+            e.account_id.clone(),
+            e.device_id,
+            "different-password".into(),
+            e.subscription.endpoint.clone(),
+        );
+        let wrong_endpoint = crate::db::Connection::new(
+            e.account_id.clone(),
+            e.device_id,
+            e.password.clone(),
+            "https://different.test/".into(),
+        );
+        assert_eq!(try_legacy_dispatch(&mut store, &wrong_device).await, None);
+        assert_eq!(try_legacy_dispatch(&mut store, &wrong_password).await, None);
+        assert_eq!(try_legacy_dispatch(&mut store, &wrong_endpoint).await, None);
         store
             .db
             .execute("UPDATE connections SET forbidden=1", [])
             .unwrap();
-        assert!(!current(&store));
+        assert_eq!(try_legacy_dispatch(&mut store, &legacy).await, None);
         store
             .db
             .execute("UPDATE connections SET forbidden=0", [])
             .unwrap();
         store.enroll(&e, NOW).unwrap();
-        assert!(!current(&store));
+        assert_eq!(try_legacy_dispatch(&mut store, &legacy).await, None);
         store.remove(ACCOUNT).unwrap();
-        assert!(!current(&store));
+        assert_eq!(try_legacy_dispatch(&mut store, &legacy).await, None);
+    }
+
+    #[tokio::test]
+    async fn legacy_dispatch_and_encrypted_import_share_a_barrier_in_both_orders() {
+        let dir = TestDir::new();
+        let enrollment = enrollment();
+        let legacy = crate::db::Connection::new(
+            enrollment.account_id.clone(),
+            enrollment.device_id,
+            enrollment.password.clone(),
+            enrollment.subscription.endpoint.clone(),
+        );
+        let initial = dir.store();
+        initial
+            .db
+            .execute(
+                "INSERT INTO connections VALUES(?1,?2,?3,?4,0,0)",
+                params![
+                    enrollment.account_id,
+                    enrollment.device_id,
+                    enrollment.password,
+                    enrollment.subscription.endpoint
+                ],
+            )
+            .unwrap();
+        drop(initial);
+
+        SQLITE_BUSY_OBSERVED.store(false, Ordering::Release);
+        SQLITE_BUSY_STOP.store(false, Ordering::Release);
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut legacy_store = dir.store();
+                let (authorized_tx, authorized_rx) = futures_channel::oneshot::channel();
+                let (release_tx, release_rx) = futures_channel::oneshot::channel();
+                let dispatch = tokio::task::spawn_local(async move {
+                    legacy_store
+                        .with_legacy_dispatch(&legacy, || async move {
+                            let _ = authorized_tx.send(());
+                            release_rx.await.expect("dispatch release barrier");
+                            "legacy request began"
+                        })
+                        .await
+                        .unwrap()
+                });
+                authorized_rx.await.expect("legacy authorization barrier");
+
+                let path = dir.path();
+                let next = enrollment.clone();
+                let (done_tx, done_rx) = std::sync::mpsc::channel();
+                let import_thread = std::thread::spawn(move || {
+                    let mut importer = PushStore::open(path).unwrap();
+                    importer.db.busy_handler(Some(observe_sqlite_busy)).unwrap();
+                    let result = importer.enroll(&next, NOW);
+                    done_tx.send(result).unwrap();
+                });
+
+                let saw_import_wait = tokio::time::timeout(Duration::from_secs(5), async {
+                    while !SQLITE_BUSY_OBSERVED.load(Ordering::Acquire) {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .is_ok();
+                if !saw_import_wait {
+                    SQLITE_BUSY_STOP.store(true, Ordering::Release);
+                    let _ = release_tx.send(());
+                    let _ = tokio::task::spawn_blocking(move || import_thread.join()).await;
+                    panic!("encrypted import did not wait on the active legacy dispatch");
+                }
+                assert!(done_rx.try_recv().is_err());
+
+                release_tx.send(()).expect("release legacy dispatch");
+                assert_eq!(dispatch.await.unwrap(), Some("legacy request began"));
+                let import_result = tokio::task::spawn_blocking(move || done_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                import_thread.join().unwrap();
+                assert_eq!(import_result.disposition, EnrollmentDisposition::Created);
+            })
+            .await;
+
+        // Reverse ordering: after import commits, the common guard refuses
+        // every later legacy entry point before the dispatch closure runs.
+        let mut after_import = dir.store();
+        let mut dispatched = false;
+        let result = after_import
+            .with_legacy_dispatch(
+                &crate::db::Connection::new(
+                    enrollment.account_id.clone(),
+                    enrollment.device_id,
+                    enrollment.password.clone(),
+                    enrollment.subscription.endpoint.clone(),
+                ),
+                || async {
+                    dispatched = true;
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, None);
+        assert!(!dispatched);
     }
 
     #[test]

@@ -66,12 +66,13 @@ async fn add(
         .map_err(|_| "state_unavailable")?
         .add(&co)
         .map_err(|_| "state_unavailable")?;
-    if push::legacy_connection_is_current(&co)? {
-        let url = url::Url::parse(endpoint).map_err(|_| "invalid_endpoint")?;
-        // A provider failure is not an enrollment rollback or device unlink.
-        if post_allowed::post_legacy_wake(url).await.is_err() {
-            log::warn!("legacy_wake_failed");
-        }
+    let url = url::Url::parse(endpoint).map_err(|_| "invalid_endpoint")?;
+    // A provider failure is not an enrollment rollback or device unlink.
+    if push::with_legacy_dispatch(&co, || post_allowed::post_legacy_wake(url))
+        .await?
+        .is_some_and(|result| result.is_err())
+    {
+        log::warn!("legacy_wake_failed");
     }
     Ok(json!({"registered":true,"mode":"legacy_wake"}))
 }
@@ -86,13 +87,13 @@ async fn ping(account: &str) -> Result<serde_json::Value, &'static str> {
         .map_err(|_| "state_unavailable")?
         .get(account)
         .map_err(|_| "not_found")?;
-    if !push::legacy_connection_is_current(&co)? {
-        return Err("encryption_required");
-    }
     let url = url::Url::parse(&co.endpoint).map_err(|_| "invalid_endpoint")?;
-    let response = post_allowed::post_legacy_wake(url)
-        .await
-        .map_err(|_| "state_unavailable")?;
+    let Some(response) =
+        push::with_legacy_dispatch(&co, || post_allowed::post_legacy_wake(url)).await?
+    else {
+        return Err("encryption_required");
+    };
+    let response = response.map_err(|_| "state_unavailable")?;
     if !response.status().is_success() {
         return Err("state_unavailable");
     }
