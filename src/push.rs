@@ -40,6 +40,16 @@ pub(crate) fn new_event(
     code: Option<&str>,
 ) -> Result<Event, &'static str> {
     let issued = now();
+    let (key_id, import_id) = sub
+        .event_identity
+        .as_ref()
+        .map(|identity| {
+            (
+                Some(identity.key_id.clone()),
+                Some(identity.import_id.clone()),
+            )
+        })
+        .unwrap_or((None, None));
     Ok(Event {
         version: sub.event_version(),
         event_id: uuid_v4()?,
@@ -49,6 +59,8 @@ pub(crate) fn new_event(
         issued_at: issued,
         expires_at: issued.saturating_add(300),
         code: code.map(str::to_owned),
+        key_id,
+        import_id,
     })
 }
 pub fn enqueue(account: &str, kind: &str, code: Option<&str>) -> Result<Value, &'static str> {
@@ -107,7 +119,8 @@ pub fn enqueue_for_connection(
     }
 }
 /// Run legacy websocket/CLI wakes under the same cross-process import fence.
-/// The callback timeout bounds how long this SQLite database's writer is held.
+/// The configured 10-second Tokio timeout bounds the callback; SQLite uses a
+/// separate 15-second busy wait for contending writers.
 pub(crate) async fn with_legacy_dispatch<F, Fut, T>(
     co: &crate::db::Connection,
     dispatch: F,

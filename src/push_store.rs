@@ -8,14 +8,18 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use openssl::{
     bn::BigNumContext,
     ec::{EcGroup, EcPoint},
+    hash::MessageDigest,
     nid::Nid,
+    pkey::PKey,
+    sign::Signer,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashSet, fmt, fs, future::Future, path::Path, time::Duration};
 
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 pub const MAX_JSON_INTEGER: u64 = 9_007_199_254_740_991;
+pub const MAX_IMPORT_SEQUENCE: u64 = i64::MAX as u64;
 pub const MAX_EVENT_BYTES: usize = 3072;
 pub const MAX_ACCOUNTS: usize = 4096;
 pub const MAX_REQUESTS_PER_ACCOUNT: usize = 1024;
@@ -96,6 +100,12 @@ impl From<serde_json::Error> for StoreError {
 pub struct Enrollment {
     pub enrollment_version: u32,
     pub request_id: String,
+    #[serde(
+        default,
+        deserialize_with = "present_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub import_seq: Option<u64>,
     pub account_id: String,
     pub device_id: u32,
     pub password: String,
@@ -108,7 +118,7 @@ pub struct Enrollment {
     pub subscription: Subscription,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Subscription {
     pub endpoint: String,
@@ -119,6 +129,28 @@ pub struct Subscription {
     pub encryption_required: bool,
     pub supported_event_versions: Vec<u32>,
     pub capabilities: Vec<String>,
+    #[serde(skip)]
+    pub(crate) event_identity: Option<EventIdentity>,
+}
+
+impl PartialEq for Subscription {
+    fn eq(&self, other: &Self) -> bool {
+        self.endpoint == other.endpoint
+            && self.p256dh == other.p256dh
+            && self.auth == other.auth
+            && self.instance == other.instance
+            && self.subscription_epoch == other.subscription_epoch
+            && self.encryption_required == other.encryption_required
+            && self.supported_event_versions == other.supported_event_versions
+            && self.capabilities == other.capabilities
+    }
+}
+impl Eq for Subscription {}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct EventIdentity {
+    pub key_id: String,
+    pub import_id: String,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +169,18 @@ pub struct Event {
         skip_serializing_if = "Option::is_none"
     )]
     pub code: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub key_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub import_id: Option<String>,
 }
 
 fn present_string<'de, D: Deserializer<'de>>(
@@ -144,6 +188,10 @@ fn present_string<'de, D: Deserializer<'de>>(
 ) -> std::result::Result<Option<String>, D::Error> {
     // An omitted optional string is permitted, but explicit JSON null is not.
     String::deserialize(d).map(Some)
+}
+
+fn present_u64<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<u64>, D::Error> {
+    u64::deserialize(d).map(Some)
 }
 
 macro_rules! redacted_debug {
@@ -202,12 +250,98 @@ fn key_bytes(value: &str, len: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn event_key_id_vector(
+    account_id: &str,
+    device_id: u32,
+    instance: &str,
+    control_key: &str,
+) -> Result<(Vec<u8>, Vec<u8>, String)> {
+    if !canonical_uuid(account_id, false) || !valid_instance(instance) {
+        return Err(StoreError::InvalidEnrollment);
+    }
+    let key = key_bytes(control_key, 32)?;
+    let mut message = b"COLLIESOCKET-EVENT-KEY-ID\0\x03".to_vec();
+    let uuid_hex: Vec<u8> = account_id.bytes().filter(|byte| *byte != b'-').collect();
+    for pair in uuid_hex.chunks_exact(2) {
+        let pair = std::str::from_utf8(pair).map_err(|_| StoreError::InvalidEnrollment)?;
+        message.push(u8::from_str_radix(pair, 16).map_err(|_| StoreError::InvalidEnrollment)?);
+    }
+    message.extend_from_slice(&device_id.to_be_bytes());
+    let instance_len = u16::try_from(instance.len()).map_err(|_| StoreError::InvalidEnrollment)?;
+    message.extend_from_slice(&instance_len.to_be_bytes());
+    message.extend_from_slice(instance.as_bytes());
+
+    let pkey = PKey::hmac(&key).map_err(|_| StoreError::StateUnavailable)?;
+    let mut signer =
+        Signer::new(MessageDigest::sha256(), &pkey).map_err(|_| StoreError::StateUnavailable)?;
+    signer
+        .update(&message)
+        .map_err(|_| StoreError::StateUnavailable)?;
+    let digest = signer
+        .sign_to_vec()
+        .map_err(|_| StoreError::StateUnavailable)?;
+    if digest.len() != 32 {
+        return Err(StoreError::StateUnavailable);
+    }
+    let key_id = URL_SAFE_NO_PAD.encode(&digest);
+    Ok((message, digest, key_id))
+}
+
+fn event_key_id(
+    account_id: &str,
+    device_id: u32,
+    instance: &str,
+    control_key: &str,
+) -> Result<String> {
+    event_key_id_vector(account_id, device_id, instance, control_key).map(|(_, _, key_id)| key_id)
+}
+
+fn event_identity(
+    account_id: &str,
+    device_id: u32,
+    instance: &str,
+    control_key: Option<&str>,
+    import_id: Option<&str>,
+) -> Result<Option<EventIdentity>> {
+    match (control_key, import_id) {
+        (Some(control_key), Some(import_id)) => Ok(Some(EventIdentity {
+            key_id: event_key_id(account_id, device_id, instance, control_key)?,
+            import_id: import_id.to_owned(),
+        })),
+        (None, None) => Ok(None),
+        _ => Err(StoreError::StateUnavailable),
+    }
+}
+
+fn restore_subscription(
+    json: &str,
+    account_id: &str,
+    device_id: u32,
+    control_key: Option<&str>,
+    import_id: Option<&str>,
+) -> Result<Subscription> {
+    let mut subscription: Subscription = serde_json::from_str(json)?;
+    if subscription.event_version() == 3 {
+        subscription.event_identity = Some(
+            event_identity(
+                account_id,
+                device_id,
+                &subscription.instance,
+                control_key,
+                import_id,
+            )?
+            .ok_or(StoreError::StateUnavailable)?,
+        );
+    }
+    Ok(subscription)
+}
+
 impl Subscription {
     pub fn event_version(&self) -> u32 {
-        if self.supported_event_versions == [1, 2] {
-            2
-        } else {
-            1
+        match self.supported_event_versions.as_slice() {
+            [1, 2] => 2,
+            [1, 2, 3] => 3,
+            _ => 1,
         }
     }
 
@@ -215,7 +349,10 @@ impl Subscription {
         if !self.encryption_required {
             return Err(StoreError::EncryptionRequired);
         }
-        if self.supported_event_versions != [1] && self.supported_event_versions != [1, 2] {
+        if self.supported_event_versions != [1]
+            && self.supported_event_versions != [1, 2]
+            && self.supported_event_versions != [1, 2, 3]
+        {
             return Err(StoreError::UnsupportedVersion);
         }
         if self.capabilities != ["wake", "test", "status"] {
@@ -272,16 +409,21 @@ impl Subscription {
 
 impl Enrollment {
     pub fn validate(&self) -> Result<()> {
-        if !matches!(self.enrollment_version, 1 | 2) {
+        if !matches!(self.enrollment_version, 1 | 2 | 3) {
             return Err(StoreError::UnsupportedVersion);
         }
         match self.control_key.as_deref() {
             Some(key) => {
-                if self.enrollment_version != 2 {
+                if !matches!(self.enrollment_version, 2 | 3) {
                     return Err(StoreError::InvalidEnrollment);
                 }
                 key_bytes(key, 32)?;
-                if self.subscription.supported_event_versions != [1, 2] {
+                let expected: &[u32] = if self.enrollment_version == 3 {
+                    &[1, 2, 3]
+                } else {
+                    &[1, 2]
+                };
+                if self.subscription.supported_event_versions != expected {
                     return Err(StoreError::UnsupportedVersion);
                 }
             }
@@ -289,6 +431,14 @@ impl Enrollment {
                 return Err(StoreError::UnsupportedVersion);
             }
             None => (),
+        }
+        if self.enrollment_version == 3 {
+            let sequence = self.import_seq.ok_or(StoreError::InvalidEnrollment)?;
+            if !(1..=MAX_IMPORT_SEQUENCE).contains(&sequence) || self.control_key.is_none() {
+                return Err(StoreError::InvalidEnrollment);
+            }
+        } else if self.import_seq.is_some() {
+            return Err(StoreError::InvalidEnrollment);
         }
         if !canonical_uuid(&self.request_id, true)
             || !canonical_uuid(&self.account_id, false)
@@ -305,7 +455,7 @@ impl Enrollment {
 impl Event {
     pub fn validate(&self, now: i64) -> Result<()> {
         let time_ok = |v: i64| v >= 0 && (v as u64) <= MAX_JSON_INTEGER;
-        if !matches!(self.version, 1 | 2)
+        if !matches!(self.version, 1 | 2 | 3)
             || !canonical_uuid(&self.event_id, true)
             || !valid_instance(&self.instance)
             || !valid_epoch(self.subscription_epoch)
@@ -318,10 +468,24 @@ impl Event {
         {
             return Err(StoreError::InvalidEvent);
         }
+        match self.version {
+            1 | 2 if self.key_id.is_some() || self.import_id.is_some() => {
+                return Err(StoreError::InvalidEvent)
+            }
+            3 => {
+                let key_id = self.key_id.as_deref().ok_or(StoreError::InvalidEvent)?;
+                let import_id = self.import_id.as_deref().ok_or(StoreError::InvalidEvent)?;
+                if key_bytes(key_id, 32).is_err() || !canonical_uuid(import_id, true) {
+                    return Err(StoreError::InvalidEvent);
+                }
+            }
+            _ => (),
+        }
         match (self.version, self.kind.as_str(), self.code.as_deref()) {
             (_, "wake" | "test", None)
             | (_, "status", Some("connection_conflict" | "connection_unavailable"))
-            | (2, "status", Some("subscription_updated")) => (),
+            | (2 | 3, "status", Some("subscription_updated"))
+            | (3, "status", Some("enrollment_imported")) => (),
             _ => return Err(StoreError::InvalidEvent),
         }
         if serde_json::to_vec(self)?.len() > MAX_EVENT_BYTES {
@@ -457,9 +621,9 @@ impl PushStore {
         let path = path.as_ref();
         protect_path(path)?;
         let mut db = Connection::open(path)?;
-        // Legacy dispatch holds SQLite's database-wide writer reservation for
-        // at most the transport's 10-second request timeout. Let imports wait
-        // through that request, with a bounded margin for scheduling/commit.
+        // Legacy dispatch uses a configured 10-second Tokio timeout while it
+        // holds SQLite's database-wide writer reservation. Contending writers
+        // have a separate 15-second SQLite busy wait.
         db.busy_timeout(SQLITE_WRITE_WAIT)?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version > SCHEMA_VERSION {
@@ -485,6 +649,66 @@ impl PushStore {
         receipt(&self.db, enrollment, &digest(enrollment)?)
     }
 
+    /// Retry only the current v3 import status for an exact cached receipt.
+    /// Historical receipts remain read-only and never imply current state.
+    pub fn retry_current_import_status(
+        &mut self,
+        enrollment: &Enrollment,
+        now: i64,
+    ) -> Result<bool> {
+        enrollment.validate()?;
+        if enrollment.enrollment_version != 3 {
+            return Ok(false);
+        }
+        if now < 0 || now as u64 > MAX_JSON_INTEGER {
+            return Err(StoreError::InvalidEnrollment);
+        }
+        let hash = digest(enrollment)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if receipt(&tx, enrollment, &hash)?.is_none() {
+            tx.commit()?;
+            return Ok(false);
+        }
+        let row: Option<(
+            String,
+            String,
+            u32,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = tx
+            .query_row(
+                "SELECT subscription_json,state,connection_device_id,connection_password,connection_endpoint,control_key,import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                [&enrollment.account_id],
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
+            )
+            .optional()?;
+        let mut current_replay = false;
+        if let Some((json, state, device, password, endpoint, control_key, import_id, seq)) = row {
+            let expected_json = serde_json::to_string(&enrollment.subscription)?;
+            if json == expected_json
+                && device == enrollment.device_id
+                && password == enrollment.password
+                && endpoint == enrollment.subscription.endpoint
+                && control_key == enrollment.control_key
+                && import_id.as_deref() == Some(enrollment.request_id.as_str())
+                && seq == enrollment.import_seq.map(|value| value as i64)
+            {
+                current_replay = true;
+                if state == "active" {
+                    let event = make_enrollment_imported_event(enrollment, now)?;
+                    ensure_enrollment_confirmation(&tx, &enrollment.account_id, &event, now)?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(current_replay)
+    }
+
     pub fn enroll(&mut self, enrollment: &Enrollment, now: i64) -> Result<EnrollmentResult> {
         enrollment.validate()?;
         if now < 0 || now as u64 > MAX_JSON_INTEGER {
@@ -505,40 +729,122 @@ impl PushStore {
         if count >= MAX_REQUESTS_PER_ACCOUNT {
             return Err(StoreError::CapacityExceeded);
         }
-        let existing: Option<(String, String, u32, String, Option<String>)> = tx.query_row(
-            "SELECT subscription_json,state,connection_device_id,connection_password,control_key FROM encrypted_subscriptions WHERE account_id=?1",
-            [&enrollment.account_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+        let existing: Option<(
+            String,
+            String,
+            u32,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = tx
+            .query_row(
+                "SELECT subscription_json,state,connection_device_id,connection_password,connection_endpoint,control_key,import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                [&enrollment.account_id],
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
+            )
+            .optional()?;
         let disposition;
         let mut changed_credentials = false;
-        if let Some((json, state, device, password, control_key)) = existing {
+        let mut intent_only_update = false;
+        if let Some((
+            json,
+            state,
+            device,
+            password,
+            connection_endpoint,
+            control_key,
+            import_id,
+            import_seq,
+        )) = existing
+        {
             let old: Subscription = serde_json::from_str(&json)?;
             changed_credentials = device != enrollment.device_id || password != enrollment.password;
-            // A control blob authenticates account/device/version/epoch, not
-            // the private password or instance, and the phone allocates control
-            // epochs above anything it has already built while a private import
-            // must be exactly the server epoch + 1. A pre-built higher-epoch
-            // frame under a reused key could therefore roll back a newer
-            // private import. Every state-changing keyed import needs a fresh
-            // key; only the idempotent import may repeat the current one.
-            let unchanged = enrollment.subscription.subscription_epoch == old.subscription_epoch
-                && old == enrollment.subscription
-                && !changed_credentials
-                && control_key == enrollment.control_key
-                && state == "active";
-            if enrollment.control_key.is_some()
-                && control_key == enrollment.control_key
-                && !unchanged
-            {
-                return Err(StoreError::InvalidEnrollment);
-            }
-            if unchanged {
-                disposition = EnrollmentDisposition::Unchanged;
-            } else if old.subscription_epoch < MAX_JSON_INTEGER
-                && enrollment.subscription.subscription_epoch == old.subscription_epoch + 1
-            {
-                disposition = EnrollmentDisposition::Rotated;
-            } else {
+            if enrollment.enrollment_version == 3 {
+                let incoming_seq = enrollment.import_seq.ok_or(StoreError::InvalidEnrollment)?;
+                let same_credentials =
+                    !changed_credentials && connection_endpoint == enrollment.subscription.endpoint;
+                let same_control_key = control_key == enrollment.control_key;
+                let exact_subscription = old == enrollment.subscription;
+                let next_epoch = old.subscription_epoch < MAX_JSON_INTEGER
+                    && enrollment.subscription.subscription_epoch == old.subscription_epoch + 1;
+                let fresh_key = !same_control_key;
+
+                if let Some(floor) = import_seq {
+                    if import_id.is_none()
+                        || import_id.as_deref() == Some(enrollment.request_id.as_str())
+                        || floor < 1
+                        || incoming_seq <= floor as u64
+                    {
+                        return Err(StoreError::EpochConflict);
+                    }
+                    let reaffirmation = state == "active"
+                        && enrollment.subscription.subscription_epoch == old.subscription_epoch
+                        && exact_subscription
+                        && same_credentials
+                        && same_control_key;
+                    if reaffirmation {
+                        intent_only_update = true;
+                        disposition = EnrollmentDisposition::Rotated;
+                    } else if next_epoch && fresh_key {
+                        disposition = EnrollmentDisposition::Rotated;
+                    } else {
+                        return Err(StoreError::EpochConflict);
+                    }
+                } else {
+                    if import_id.is_some() {
+                        return Err(StoreError::StateUnavailable);
+                    }
+                    let mut old_with_v3_versions = old.clone();
+                    old_with_v3_versions.supported_event_versions =
+                        enrollment.subscription.supported_event_versions.clone();
+                    let adoption = state == "active"
+                        && old.supported_event_versions == [1, 2]
+                        && enrollment.subscription.supported_event_versions == [1, 2, 3]
+                        && enrollment.subscription.subscription_epoch == old.subscription_epoch
+                        && old_with_v3_versions == enrollment.subscription
+                        && same_credentials
+                        && same_control_key;
+                    if adoption {
+                        intent_only_update = true;
+                        disposition = EnrollmentDisposition::Rotated;
+                    } else if next_epoch && fresh_key {
+                        disposition = EnrollmentDisposition::Rotated;
+                    } else {
+                        return Err(StoreError::EpochConflict);
+                    }
+                }
+            } else if import_seq.is_some() || import_id.is_some() {
+                // A cached exact v1/v2 receipt was handled above. A fresh
+                // legacy request cannot express or lower the retained floor.
                 return Err(StoreError::EpochConflict);
+            } else {
+                // A control blob authenticates account/device/version/epoch,
+                // not the private password or instance. Every state-changing
+                // keyed legacy import therefore needs a fresh key.
+                let unchanged = enrollment.subscription.subscription_epoch
+                    == old.subscription_epoch
+                    && old == enrollment.subscription
+                    && !changed_credentials
+                    && connection_endpoint == enrollment.subscription.endpoint
+                    && control_key == enrollment.control_key
+                    && state == "active";
+                if enrollment.control_key.is_some()
+                    && control_key == enrollment.control_key
+                    && !unchanged
+                {
+                    return Err(StoreError::InvalidEnrollment);
+                }
+                if unchanged {
+                    disposition = EnrollmentDisposition::Unchanged;
+                } else if old.subscription_epoch < MAX_JSON_INTEGER
+                    && enrollment.subscription.subscription_epoch == old.subscription_epoch + 1
+                {
+                    disposition = EnrollmentDisposition::Rotated;
+                } else {
+                    return Err(StoreError::EpochConflict);
+                }
             }
         } else {
             if enrollment.subscription.subscription_epoch != 1 {
@@ -565,13 +871,23 @@ impl PushStore {
                     tx.execute("INSERT INTO connections(uuid,device_id,password,endpoint,forbidden,last_registration) VALUES(?1,?2,?3,?4,0,?5)",
                         params![enrollment.account_id,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now])?;
                 }
-                tx.execute("INSERT INTO encrypted_subscriptions(account_id,subscription_epoch,subscription_json,state,connection_device_id,connection_password,connection_endpoint,updated_at,control_key) VALUES(?1,?2,?3,'active',?4,?5,?6,?7,?8)",
-                    params![enrollment.account_id,enrollment.subscription.subscription_epoch as i64,json,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now,enrollment.control_key])?;
+                tx.execute("INSERT INTO encrypted_subscriptions(account_id,subscription_epoch,subscription_json,state,connection_device_id,connection_password,connection_endpoint,updated_at,control_key,import_id,import_seq) VALUES(?1,?2,?3,'active',?4,?5,?6,?7,?8,?9,?10)",
+                    params![enrollment.account_id,enrollment.subscription.subscription_epoch as i64,json,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now,enrollment.control_key,if enrollment.enrollment_version == 3 {Some(enrollment.request_id.as_str())} else {None},enrollment.import_seq.map(|sequence| sequence as i64)])?;
+            } else if intent_only_update {
+                // Same-key same-epoch adoption/reaffirmation changes only
+                // negotiated protocol or import intent metadata. Preserve the
+                // active state and Signal replay window.
+                tx.execute("UPDATE encrypted_subscriptions SET subscription_json=?2,updated_at=?3,import_id=?4,import_seq=?5 WHERE account_id=?1",
+                    params![enrollment.account_id,json,now,enrollment.request_id,enrollment.import_seq.map(|sequence| sequence as i64)])?;
+                tx.execute(
+                    "DELETE FROM encrypted_push_queue WHERE account_id=?1",
+                    [&enrollment.account_id],
+                )?;
             } else {
                 // Update the shadow tuple first, so the legacy-overwrite guard
                 // permits exactly this connection update inside the transaction.
-                tx.execute("UPDATE encrypted_subscriptions SET subscription_epoch=?2,subscription_json=?3,state='active',connection_device_id=?4,connection_password=?5,connection_endpoint=?6,updated_at=?7,control_key=?8,last_control_digest=NULL,control_status_at=NULL WHERE account_id=?1",
-                    params![enrollment.account_id,enrollment.subscription.subscription_epoch as i64,json,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now,enrollment.control_key])?;
+                tx.execute("UPDATE encrypted_subscriptions SET subscription_epoch=?2,subscription_json=?3,state='active',connection_device_id=?4,connection_password=?5,connection_endpoint=?6,updated_at=?7,control_key=?8,last_control_digest=NULL,control_status_at=NULL,import_id=?9,import_seq=?10 WHERE account_id=?1",
+                    params![enrollment.account_id,enrollment.subscription.subscription_epoch as i64,json,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now,enrollment.control_key,if enrollment.enrollment_version == 3 {Some(enrollment.request_id.as_str())} else {None},enrollment.import_seq.map(|sequence| sequence as i64)])?;
                 let changed = tx.execute("UPDATE connections SET device_id=?2,password=?3,endpoint=?4,last_registration=?5,forbidden=CASE WHEN ?6 THEN 0 ELSE forbidden END WHERE uuid=?1",
                     params![enrollment.account_id,enrollment.device_id,enrollment.password,enrollment.subscription.endpoint,now,changed_credentials])?;
                 if changed != 1 {
@@ -589,6 +905,10 @@ impl PushStore {
                 "INSERT INTO encrypted_subscription_generations(account_id,generation) VALUES(?1,?2) ON CONFLICT(account_id) DO UPDATE SET generation=excluded.generation",
                 params![enrollment.account_id, token()?],
             )?;
+            if enrollment.enrollment_version == 3 {
+                let event = make_enrollment_imported_event(enrollment, now)?;
+                ensure_enrollment_confirmation(&tx, &enrollment.account_id, &event, now)?;
+            }
         }
         tx.execute("INSERT INTO encrypted_enrollment_requests(account_id,request_id,request_digest,subscription_epoch,disposition,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
             params![enrollment.account_id,enrollment.request_id,hash,enrollment.subscription.subscription_epoch as i64,disposition.as_str(),now])?;
@@ -601,17 +921,24 @@ impl PushStore {
     }
 
     pub fn get_subscription(&self, account_id: &str) -> Result<Option<Subscription>> {
-        let value: Option<String> = self
+        let row: Option<(String, u32, Option<String>, Option<String>)> = self
             .db
             .query_row(
-                "SELECT subscription_json FROM encrypted_subscriptions WHERE account_id=?1",
+                "SELECT subscription_json,connection_device_id,control_key,import_id FROM encrypted_subscriptions WHERE account_id=?1",
                 [account_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
-        value
-            .map(|s| serde_json::from_str(&s).map_err(StoreError::from))
-            .transpose()
+        row.map(|(json, device_id, control_key, import_id)| {
+            restore_subscription(
+                &json,
+                account_id,
+                device_id,
+                control_key.as_deref(),
+                import_id.as_deref(),
+            )
+        })
+        .transpose()
     }
 
     /// Capture once before connecting, never refresh it from a socket callback.
@@ -637,15 +964,21 @@ impl PushStore {
         co: &crate::db::Connection,
         expected_generation: &str,
     ) -> Result<Option<ControlContext>> {
-        let row: Option<(String, String)> = self.db.query_row(
-            "SELECT s.subscription_json,s.control_key FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id JOIN encrypted_subscription_generations g ON g.account_id=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND s.control_key IS NOT NULL AND g.generation=?5",
+        let row: Option<(String, String, Option<String>, u32)> = self.db.query_row(
+            "SELECT s.subscription_json,s.control_key,s.import_id,s.connection_device_id FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id JOIN encrypted_subscription_generations g ON g.account_id=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND s.control_key IS NOT NULL AND g.generation=?5",
             params![co.uuid,co.device_id,co.password,co.endpoint,expected_generation],
-            |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
-        row.map(|(json, control_key)| {
-            let subscription: Subscription = serde_json::from_str(&json)?;
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        row.map(|(json, control_key, import_id, device_id)| {
+            let subscription = restore_subscription(
+                &json,
+                &co.uuid,
+                device_id,
+                Some(&control_key),
+                import_id.as_deref(),
+            )?;
             subscription.validate()?;
             key_bytes(&control_key, 32)?;
-            if subscription.event_version() != 2 {
+            if !matches!(subscription.event_version(), 2 | 3) {
                 return Err(StoreError::StateUnavailable);
             }
             Ok(ControlContext {
@@ -674,8 +1007,8 @@ impl PushStore {
         new_subscription.validate()?;
         key_bytes(expected_key, 32)?;
         confirmation.validate(now)?;
-        if new_subscription.event_version() != 2
-            || confirmation.version != 2
+        if !matches!(new_subscription.event_version(), 2 | 3)
+            || confirmation.version != new_subscription.event_version()
             || confirmation.kind != "status"
             || confirmation.code.as_deref() != Some("subscription_updated")
             || confirmation.instance != new_subscription.instance
@@ -752,12 +1085,19 @@ impl PushStore {
         endpoint: &str,
         expected_generation: &str,
     ) -> Result<Option<Subscription>> {
-        let value: Option<String> = self.db.query_row(
-            "SELECT s.subscription_json FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id JOIN encrypted_subscription_generations g ON g.account_id=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND g.generation=?5",
-            params![account_id,device_id,password,endpoint,expected_generation], |r| r.get(0)).optional()?;
-        value
-            .map(|s| serde_json::from_str(&s).map_err(StoreError::from))
-            .transpose()
+        let row: Option<(String, Option<String>, Option<String>)> = self.db.query_row(
+            "SELECT s.subscription_json,s.control_key,s.import_id FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id JOIN encrypted_subscription_generations g ON g.account_id=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND g.generation=?5",
+            params![account_id,device_id,password,endpoint,expected_generation], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        row.map(|(json, control_key, import_id)| {
+            restore_subscription(
+                &json,
+                account_id,
+                device_id,
+                control_key.as_deref(),
+                import_id.as_deref(),
+            )
+        })
+        .transpose()
     }
 
     /// Serialize a legacy authorization and its bounded dispatch against every
@@ -786,7 +1126,8 @@ impl PushStore {
         }
 
         // The authorization remains protected until the request future ends.
-        // post_legacy_wake bounds DNS, policy checks, and HTTP to 10 seconds.
+        // The caller applies the configured 10-second Tokio timeout across
+        // DNS, policy checks, and HTTP.
         let outcome = dispatch().await;
         tx.commit()?;
         Ok(Some(outcome))
@@ -1013,8 +1354,8 @@ fn ensure_control_confirmation(
         return Ok(());
     }
     let pending: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM encrypted_push_queue WHERE account_id=?1 AND subscription_epoch=?2 AND expires_at>?3 AND (attempts<4 OR lease_until>?3) AND json_extract(event_json,'$.version')=2 AND json_extract(event_json,'$.kind')='status' AND json_extract(event_json,'$.code')='subscription_updated')",
-        params![account_id,event.subscription_epoch as i64,now], |r| r.get(0))?;
+        "SELECT EXISTS(SELECT 1 FROM encrypted_push_queue WHERE account_id=?1 AND subscription_epoch=?2 AND expires_at>?3 AND (attempts<4 OR lease_until>?3) AND json_extract(event_json,'$.version')=?4 AND json_extract(event_json,'$.kind')='status' AND json_extract(event_json,'$.code')='subscription_updated' AND (?5 IS NULL OR json_extract(event_json,'$.import_id')=?5) AND (?6 IS NULL OR json_extract(event_json,'$.key_id')=?6))",
+        params![account_id,event.subscription_epoch as i64,now,event.version,event.import_id,event.key_id], |r| r.get(0))?;
     if !pending {
         if !enqueue_event(tx, account_id, event, now)? {
             return Err(StoreError::InvalidEvent);
@@ -1025,6 +1366,79 @@ fn ensure_control_confirmation(
         )?;
     }
     Ok(())
+}
+
+fn make_enrollment_imported_event(enrollment: &Enrollment, now: i64) -> Result<Event> {
+    if enrollment.enrollment_version != 3 || enrollment.subscription.event_version() != 3 {
+        return Err(StoreError::InvalidEnrollment);
+    }
+    let control_key = enrollment
+        .control_key
+        .as_deref()
+        .ok_or(StoreError::InvalidEnrollment)?;
+    let event = Event {
+        version: 3,
+        event_id: random_uuid_v4()?,
+        instance: enrollment.subscription.instance.clone(),
+        subscription_epoch: enrollment.subscription.subscription_epoch,
+        kind: "status".into(),
+        issued_at: now,
+        expires_at: now.saturating_add(MAX_EVENT_LIFETIME),
+        code: Some("enrollment_imported".into()),
+        key_id: Some(event_key_id(
+            &enrollment.account_id,
+            enrollment.device_id,
+            &enrollment.subscription.instance,
+            control_key,
+        )?),
+        import_id: Some(enrollment.request_id.clone()),
+    };
+    event.validate(now)?;
+    Ok(event)
+}
+
+fn ensure_enrollment_confirmation(
+    tx: &Transaction<'_>,
+    account_id: &str,
+    event: &Event,
+    now: i64,
+) -> Result<()> {
+    let pending: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM encrypted_push_queue WHERE account_id=?1 AND subscription_epoch=?2 AND expires_at>?3 AND (attempts<?4 OR lease_until>?3) AND json_extract(event_json,'$.version')=3 AND json_extract(event_json,'$.kind')='status' AND json_extract(event_json,'$.code')='enrollment_imported' AND json_extract(event_json,'$.import_id')=?5 AND json_extract(event_json,'$.key_id')=?6)",
+        params![account_id,event.subscription_epoch as i64,now,MAX_ATTEMPTS,event.import_id,event.key_id],
+        |r| r.get(0),
+    )?;
+    if pending {
+        return Ok(());
+    }
+    let last_status: Option<i64> = tx.query_row(
+        "SELECT max(created_at) FROM encrypted_push_event_ids WHERE account_id=?1 AND status_retry_key=?2",
+        params![account_id,event.import_id],
+        |r| r.get(0),
+    )?;
+    if last_status.is_some_and(|last| now < last.saturating_add(CONTROL_STATUS_RETRY_SECONDS)) {
+        return Ok(());
+    }
+    if !enqueue_event(tx, account_id, event, now)? {
+        return Err(StoreError::InvalidEvent);
+    }
+    Ok(())
+}
+
+fn random_uuid_v4() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    openssl::rand::rand_bytes(&mut bytes).map_err(|_| StoreError::StateUnavailable)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ))
 }
 
 // All enrollment checks and outbox changes share the caller's transaction.
@@ -1046,20 +1460,35 @@ fn enqueue_event(tx: &Transaction<'_>, account_id: &str, event: &Event, now: i64
         }
         return Ok(false);
     }
-    let current: Option<(String, String)> = tx
+    let current: Option<(String, String, u32, Option<String>, Option<String>)> = tx
         .query_row(
-            "SELECT subscription_json,state FROM encrypted_subscriptions WHERE account_id=?1",
+            "SELECT subscription_json,state,connection_device_id,control_key,import_id FROM encrypted_subscriptions WHERE account_id=?1",
             [account_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    let (sub, state) = current.ok_or(StoreError::SubscriptionMissing)?;
-    let sub: Subscription = serde_json::from_str(&sub)?;
+    let (sub_json, state, device_id, control_key, import_id) =
+        current.ok_or(StoreError::SubscriptionMissing)?;
+    let sub = restore_subscription(
+        &sub_json,
+        account_id,
+        device_id,
+        control_key.as_deref(),
+        import_id.as_deref(),
+    )?;
     if sub.subscription_epoch != event.subscription_epoch || sub.instance != event.instance {
         return Err(StoreError::EpochConflict);
     }
     if event.version != sub.event_version() {
         return Err(StoreError::UnsupportedVersion);
+    }
+    if event.version == 3
+        && sub.event_identity.as_ref().is_none_or(|identity| {
+            event.key_id.as_deref() != Some(identity.key_id.as_str())
+                || event.import_id.as_deref() != Some(identity.import_id.as_str())
+        })
+    {
+        return Err(StoreError::EpochConflict);
     }
     if state != "active" {
         return Err(StoreError::SubscriptionInactive);
@@ -1083,7 +1512,13 @@ fn enqueue_event(tx: &Transaction<'_>, account_id: &str, event: &Event, now: i64
     {
         return Err(StoreError::QueueFull);
     }
-    tx.execute("INSERT INTO encrypted_push_event_ids(event_id,account_id,event_digest,expires_at) VALUES(?1,?2,?3,?4)", params![event.event_id,account_id,hash,event.expires_at])?;
+    let status_retry_key =
+        if event.version == 3 && event.code.as_deref() == Some("enrollment_imported") {
+            event.import_id.as_deref()
+        } else {
+            None
+        };
+    tx.execute("INSERT INTO encrypted_push_event_ids(event_id,account_id,event_digest,expires_at,status_retry_key,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![event.event_id,account_id,hash,event.expires_at,status_retry_key,now])?;
     tx.execute("INSERT INTO encrypted_push_queue(event_id,account_id,subscription_epoch,event_json,expires_at,attempts,next_attempt_at) VALUES(?1,?2,?3,?4,?5,0,?6)", params![event.event_id,account_id,event.subscription_epoch as i64,json,event.expires_at,now])?;
     Ok(true)
 }
@@ -1246,7 +1681,8 @@ fn verify_schema(db: &Connection) -> Result<()> {
         }
     }
     // A schema marker alone must not make a partially migrated store usable.
-    db.prepare("SELECT control_key,last_control_digest,control_status_at FROM encrypted_subscriptions LIMIT 0")?;
+    db.prepare("SELECT control_key,last_control_digest,control_status_at,import_id,import_seq FROM encrypted_subscriptions LIMIT 0")?;
+    db.prepare("SELECT event_id,event_digest,expires_at,status_retry_key,created_at FROM encrypted_push_event_ids LIMIT 0")?;
     db.prepare("SELECT account_id,generation FROM encrypted_subscription_generations LIMIT 0")?;
     Ok(())
 }
@@ -1315,19 +1751,30 @@ PRAGMA user_version=2;
          ALTER TABLE encrypted_subscriptions ADD COLUMN control_status_at INTEGER;",
         )?;
     }
-    tx.execute_batch(
-        "CREATE TABLE encrypted_subscription_generations(
-         account_id TEXT PRIMARY KEY REFERENCES encrypted_subscriptions(account_id) ON DELETE CASCADE,
-         generation TEXT NOT NULL);",
-    )?;
-    let accounts: Vec<String> = tx
-        .prepare("SELECT account_id FROM encrypted_subscriptions")?
-        .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    for account in accounts {
-        tx.execute(
-            "INSERT INTO encrypted_subscription_generations(account_id,generation) VALUES(?1,?2)",
-            params![account, token()?],
+    if version < 4 {
+        tx.execute_batch(
+            "CREATE TABLE encrypted_subscription_generations(
+             account_id TEXT PRIMARY KEY REFERENCES encrypted_subscriptions(account_id) ON DELETE CASCADE,
+             generation TEXT NOT NULL);",
+        )?;
+        let accounts: Vec<String> = tx
+            .prepare("SELECT account_id FROM encrypted_subscriptions")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for account in accounts {
+            tx.execute(
+                "INSERT INTO encrypted_subscription_generations(account_id,generation) VALUES(?1,?2)",
+                params![account, token()?],
+            )?;
+        }
+    }
+    if version < 5 {
+        tx.execute_batch(
+            "ALTER TABLE encrypted_subscriptions ADD COLUMN import_id TEXT;
+             ALTER TABLE encrypted_subscriptions ADD COLUMN import_seq INTEGER
+             CHECK(import_seq IS NULL OR import_seq BETWEEN 1 AND 9223372036854775807);
+             ALTER TABLE encrypted_push_event_ids ADD COLUMN status_retry_key TEXT;
+             ALTER TABLE encrypted_push_event_ids ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
     // Invalid historical schemas must roll back the whole migration, including
@@ -1420,10 +1867,26 @@ mod tests {
                 encryption_required: true,
                 supported_event_versions: vec![1],
                 capabilities: vec!["wake".into(), "test".into(), "status".into()],
+                event_identity: None,
             },
+            import_seq: None,
         }
     }
     fn event(enrollment: &Enrollment, n: u64) -> Event {
+        let identity = if enrollment.enrollment_version == 3 {
+            Some(EventIdentity {
+                key_id: event_key_id(
+                    &enrollment.account_id,
+                    enrollment.device_id,
+                    &enrollment.subscription.instance,
+                    enrollment.control_key.as_deref().unwrap(),
+                )
+                .unwrap(),
+                import_id: enrollment.request_id.clone(),
+            })
+        } else {
+            None
+        };
         Event {
             version: enrollment.subscription.event_version(),
             event_id: id(n),
@@ -1433,6 +1896,8 @@ mod tests {
             issued_at: NOW,
             expires_at: NOW + 300,
             code: None,
+            key_id: identity.as_ref().map(|value| value.key_id.clone()),
+            import_id: identity.map(|value| value.import_id),
         }
     }
     fn rotate(enrollment: &Enrollment, n: u64) -> Enrollment {
@@ -1447,6 +1912,23 @@ mod tests {
         e.control_key = Some(URL_SAFE_NO_PAD.encode([23u8; 32]));
         e.subscription.supported_event_versions = vec![1, 2];
         e
+    }
+
+    fn v3_enrollment() -> Enrollment {
+        let mut e = keyed_enrollment();
+        e.enrollment_version = 3;
+        e.import_seq = Some(1);
+        e.subscription.supported_event_versions = vec![1, 2, 3];
+        e
+    }
+
+    fn v3_import_from(e: &Enrollment, request: u64, sequence: u64) -> Enrollment {
+        let mut next = e.clone();
+        next.enrollment_version = 3;
+        next.request_id = id(request);
+        next.import_seq = Some(sequence);
+        next.subscription.supported_event_versions = vec![1, 2, 3];
+        next
     }
 
     fn private_generation(store: &PushStore) -> String {
@@ -1477,6 +1959,8 @@ mod tests {
             issued_at: now,
             expires_at: now + 300,
             code: Some("subscription_updated".into()),
+            key_id: None,
+            import_id: None,
         }
     }
     fn legacy_database(dir: &TestDir, version: u32) {
@@ -1561,6 +2045,10 @@ mod tests {
              ALTER TABLE encrypted_subscriptions DROP COLUMN control_key;
              ALTER TABLE encrypted_subscriptions DROP COLUMN last_control_digest;
              ALTER TABLE encrypted_subscriptions DROP COLUMN control_status_at;
+             ALTER TABLE encrypted_subscriptions DROP COLUMN import_id;
+             ALTER TABLE encrypted_subscriptions DROP COLUMN import_seq;
+             ALTER TABLE encrypted_push_event_ids DROP COLUMN status_retry_key;
+             ALTER TABLE encrypted_push_event_ids DROP COLUMN created_at;
              PRAGMA user_version=2;",
             )
             .unwrap();
@@ -1580,6 +2068,67 @@ mod tests {
         assert_eq!(store.pending_count(None).unwrap(), 1);
         assert_eq!(store.claim_due(NOW).unwrap().unwrap().event.version, 1);
         assert!(!serde_json::to_string(&e).unwrap().contains("control_key"));
+    }
+
+    #[test]
+    fn migration_from_four_preserves_receipts_generations_and_leased_events() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let e = keyed_enrollment();
+        let original = store.enroll(&e, NOW).unwrap();
+        store.enqueue(ACCOUNT, &event(&e, 111), NOW).unwrap();
+        store.claim_due(NOW).unwrap().unwrap();
+        let generation = private_generation(&store);
+        let leased: (u32, i64, Option<i64>, Option<String>) = store
+            .db
+            .query_row(
+                "SELECT attempts,next_attempt_at,lease_until,lease_token FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        store
+            .db
+            .execute_batch(
+                "ALTER TABLE encrypted_subscriptions DROP COLUMN import_id;
+                 ALTER TABLE encrypted_subscriptions DROP COLUMN import_seq;
+                 ALTER TABLE encrypted_push_event_ids DROP COLUMN status_retry_key;
+                 ALTER TABLE encrypted_push_event_ids DROP COLUMN created_at;
+                 PRAGMA user_version=4;",
+            )
+            .unwrap();
+        drop(store);
+
+        let store = dir.store();
+        assert_eq!(private_generation(&store), generation);
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(e.subscription.clone())
+        );
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        let after_lease: (u32, i64, Option<i64>, Option<String>) = store
+            .db
+            .query_row(
+                "SELECT attempts,next_attempt_at,lease_until,lease_token FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(after_lease, leased);
+        assert!(
+            store.receipt_for(&e).unwrap().is_some_and(
+                |receipt| receipt.replayed && receipt.disposition == original.disposition
+            )
+        );
+        let null_intent: (Option<String>, Option<i64>) = store
+            .db
+            .query_row(
+                "SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                [ACCOUNT],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(null_intent, (None, None));
     }
 
     #[test]
@@ -1628,6 +2177,1012 @@ mod tests {
         status.validate(NOW).unwrap();
         status.version = 1;
         assert_eq!(status.validate(NOW), Err(StoreError::InvalidEvent));
+    }
+
+    #[test]
+    fn enrollment_v3_requires_signed_sequence_and_exact_negotiation() {
+        let good = v3_enrollment();
+        good.validate().unwrap();
+        assert_eq!(good.subscription.event_version(), 3);
+        assert!(!serde_json::to_string(&keyed_enrollment())
+            .unwrap()
+            .contains("import_seq"));
+        for sequence in [None, Some(0), Some(MAX_IMPORT_SEQUENCE + 1)] {
+            let mut bad = good.clone();
+            bad.import_seq = sequence;
+            assert_eq!(bad.validate(), Err(StoreError::InvalidEnrollment));
+        }
+        let mut bad = good.clone();
+        bad.subscription.supported_event_versions = vec![1, 2];
+        assert_eq!(bad.validate(), Err(StoreError::UnsupportedVersion));
+        let mut bad = good.clone();
+        bad.subscription.capabilities = vec!["wake".into()];
+        assert_eq!(bad.validate(), Err(StoreError::CapabilityRequired));
+        bad.subscription.supported_event_versions = vec![1, 2];
+        assert_eq!(bad.validate(), Err(StoreError::UnsupportedVersion));
+        let mut bad = keyed_enrollment();
+        bad.import_seq = Some(1);
+        assert_eq!(bad.validate(), Err(StoreError::InvalidEnrollment));
+
+        let json = serde_json::to_string(&good).unwrap();
+        assert!(serde_json::from_str::<Enrollment>(
+            &json.replace("\"import_seq\":1", "\"import_seq\":null")
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rust_key_id_matches_the_canonical_v3_message_and_digest_vector() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/contracts/encrypted-push/v3/fixtures/key-id-v3.json"
+        )))
+        .unwrap();
+        let (message, digest, key_id) = event_key_id_vector(
+            fixture["account_id"].as_str().unwrap(),
+            fixture["device_id"].as_u64().unwrap() as u32,
+            fixture["instance"].as_str().unwrap(),
+            fixture["control_key"].as_str().unwrap(),
+        )
+        .unwrap();
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert_eq!(hex(&message), fixture["message_hex"]);
+        assert_eq!(hex(&digest), fixture["digest_hex"]);
+        assert_eq!(key_id, fixture["key_id"]);
+    }
+
+    #[test]
+    fn v3_events_require_canonical_identity_and_v1_v2_stay_identity_free() {
+        let v2 = keyed_enrollment();
+        let mut v2_event = event(&v2, 901);
+        v2_event.validate(NOW).unwrap();
+        v2_event.key_id = Some(URL_SAFE_NO_PAD.encode([9u8; 32]));
+        assert_eq!(v2_event.validate(NOW), Err(StoreError::InvalidEvent));
+
+        let v3 = v3_enrollment();
+        let good = event(&v3, 902);
+        good.validate(NOW).unwrap();
+        let mut missing = good.clone();
+        missing.import_id = None;
+        assert_eq!(missing.validate(NOW), Err(StoreError::InvalidEvent));
+        let mut bad_key = good;
+        bad_key.key_id = Some(format!("{}=", URL_SAFE_NO_PAD.encode([9u8; 32])));
+        assert_eq!(bad_key.validate(NOW), Err(StoreError::InvalidEvent));
+    }
+
+    #[test]
+    fn keyed_legacy_row_adopts_v3_at_the_same_epoch_and_queues_bound_status() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let legacy = keyed_enrollment();
+        store.enroll(&legacy, NOW).unwrap();
+        store.enqueue(ACCOUNT, &event(&legacy, 903), NOW).unwrap();
+        let old_generation = private_generation(&store);
+
+        let adoption = v3_import_from(&legacy, 904, 17);
+        let result = store.enroll(&adoption, NOW + 1).unwrap();
+        assert_eq!(result.disposition, EnrollmentDisposition::Rotated);
+        assert_ne!(private_generation(&store), old_generation);
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        let row: (Option<String>, Option<i64>) = store
+            .db
+            .query_row(
+                "SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                [ACCOUNT],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (Some(adoption.request_id.clone()), Some(17)));
+
+        let after_adoption = durable_snapshot(&store);
+        let replay = store.enroll(&legacy, NOW + 2).unwrap();
+        assert!(replay.replayed);
+        assert_eq!(durable_snapshot(&store), after_adoption);
+        let mut stale_legacy = legacy.clone();
+        stale_legacy.request_id = id(908);
+        assert_eq!(
+            store.enroll(&stale_legacy, NOW + 2),
+            Err(StoreError::EpochConflict)
+        );
+        assert_eq!(durable_snapshot(&store), after_adoption);
+
+        let imported = store.claim_due(NOW + 1).unwrap().unwrap().event;
+        assert_eq!(imported.version, 3);
+        assert_eq!(imported.kind, "status");
+        assert_eq!(imported.code.as_deref(), Some("enrollment_imported"));
+        assert_eq!(
+            imported.import_id.as_deref(),
+            Some(adoption.request_id.as_str())
+        );
+        assert_eq!(
+            imported.key_id.as_deref(),
+            Some(
+                event_key_id(
+                    &adoption.account_id,
+                    adoption.device_id,
+                    &adoption.subscription.instance,
+                    adoption.control_key.as_deref().unwrap(),
+                )
+                .unwrap()
+                .as_str()
+            )
+        );
+
+        let subscription = store.get_subscription(ACCOUNT).unwrap().unwrap();
+        let serialized = serde_json::to_string(&subscription).unwrap();
+        assert!(!serialized.contains("event_identity"));
+        assert!(!serialized.contains(&adoption.request_id));
+    }
+
+    #[test]
+    fn rejected_first_v3_adoption_mismatches_leave_every_table_unchanged() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v3/fixtures/first-v3-adoption-cases-v3.json"
+        ))
+        .unwrap();
+        for (index, mismatch) in fixture["rejected_adoption_mutations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            let id = mismatch["id"].as_str().unwrap();
+            let dir = TestDir::new();
+            let mut store = dir.store();
+            let legacy = keyed_enrollment();
+            store.enroll(&legacy, NOW).unwrap();
+            store.enqueue(ACCOUNT, &event(&legacy, 909), NOW).unwrap();
+            let before = durable_snapshot(&store);
+            let before_generation = private_generation(&store);
+            let mut candidate = v3_import_from(&legacy, 910 + index as u64, 20);
+            let value = &mismatch["value"];
+            if mismatch["expected_error"] == "invalid_enrollment" {
+                let mut candidate_json = serde_json::to_value(&candidate).unwrap();
+                *candidate_json
+                    .pointer_mut("/subscription/supported_event_versions")
+                    .unwrap() = value.clone();
+                assert!(
+                    serde_json::from_value::<Enrollment>(candidate_json).is_err(),
+                    "{} must fail strict deserialization",
+                    id
+                );
+                assert_eq!(durable_snapshot(&store), before);
+                assert_eq!(private_generation(&store), before_generation);
+                continue;
+            }
+            match mismatch["path"].as_str().unwrap() {
+                "subscription.endpoint" => {
+                    candidate.subscription.endpoint = value.as_str().unwrap().into()
+                }
+                "control_key" => candidate.control_key = Some(value.as_str().unwrap().into()),
+                "subscription.p256dh" => {
+                    candidate.subscription.p256dh = value.as_str().unwrap().into()
+                }
+                "subscription.auth" => candidate.subscription.auth = value.as_str().unwrap().into(),
+                "password" => candidate.password = value.as_str().unwrap().into(),
+                "device_id" => candidate.device_id = value.as_u64().unwrap() as u32,
+                "subscription.instance" => {
+                    candidate.subscription.instance = value.as_str().unwrap().into()
+                }
+                "subscription.capabilities" => {
+                    candidate.subscription.capabilities =
+                        serde_json::from_value(value.clone()).unwrap()
+                }
+                "subscription.supported_event_versions" => {
+                    candidate.subscription.supported_event_versions =
+                        serde_json::from_value(value.clone()).unwrap()
+                }
+                path => panic!("unexpected adoption mutation path: {path}"),
+            }
+            let expected = match mismatch["expected_error"].as_str().unwrap() {
+                "epoch_conflict" => StoreError::EpochConflict,
+                "capability_required" => StoreError::CapabilityRequired,
+                "unsupported_version" => StoreError::UnsupportedVersion,
+                error => panic!("unexpected adoption error: {error}"),
+            };
+            assert_eq!(store.enroll(&candidate, NOW + 1), Err(expected), "{}", id);
+            if expected == StoreError::EpochConflict {
+                assert!(store.receipt_for(&candidate).unwrap().is_none());
+            }
+            assert_eq!(durable_snapshot(&store), before);
+            assert_eq!(private_generation(&store), before_generation);
+        }
+    }
+
+    #[test]
+    fn account_selection_creates_independent_registration_and_requires_epoch_one() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v3/fixtures/first-v3-adoption-cases-v3.json"
+        ))
+        .unwrap();
+        let cases = fixture["account_selection_cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 2);
+
+        for case in cases {
+            let dir = TestDir::new();
+            let mut store = dir.store();
+            let existing_a: Enrollment = serde_json::from_str(include_str!(
+                "../contracts/encrypted-push/v2/fixtures/enrollment-keyed.json"
+            ))
+            .unwrap();
+            assert_eq!(
+                existing_a.account_id,
+                case["existing_account_a"]["account_id"].as_str().unwrap()
+            );
+            store.enroll(&existing_a, NOW).unwrap();
+            store
+                .enqueue(&existing_a.account_id, &event(&existing_a, 919), NOW)
+                .unwrap();
+            let before_a = durable_account_snapshot(&store, &existing_a.account_id);
+            let before = durable_snapshot(&store);
+
+            let enrollment_fixture = match case["id"].as_str().unwrap() {
+                "independent-account-b-epoch1-create" => "enrollment-independent-account-b-v3.json",
+                "absent-account-b-epoch-above-one-rejected" => {
+                    "enrollment-absent-account-b-epoch2-v3.json"
+                }
+                id => panic!("unexpected account-selection vector: {id}"),
+            };
+            let raw = match enrollment_fixture {
+                "enrollment-independent-account-b-v3.json" => include_str!(
+                    "../contracts/encrypted-push/v3/fixtures/enrollment-independent-account-b-v3.json"
+                ),
+                "enrollment-absent-account-b-epoch2-v3.json" => include_str!(
+                    "../contracts/encrypted-push/v3/fixtures/enrollment-absent-account-b-epoch2-v3.json"
+                ),
+                _ => unreachable!(),
+            };
+            let enrollment: Enrollment = serde_json::from_str(raw).unwrap();
+            assert_eq!(
+                enrollment.account_id,
+                case["selected_account_id"].as_str().unwrap()
+            );
+            assert_eq!(enrollment.request_id, case["request_id"].as_str().unwrap());
+            assert_eq!(enrollment.control_key, existing_a.control_key);
+
+            if case["expected"] == "create_b" {
+                let response: serde_json::Value = serde_json::from_str(include_str!(
+                    "../contracts/encrypted-push/v3/fixtures/response-independent-account-b-v3.json"
+                ))
+                .unwrap();
+                let expected_event: Event = serde_json::from_str(include_str!(
+                    "../contracts/encrypted-push/v3/fixtures/event-independent-account-b-v3.json"
+                ))
+                .unwrap();
+                let result = store.enroll(&enrollment, NOW + 1).unwrap();
+                assert!(!result.replayed);
+                assert_eq!(result.disposition, EnrollmentDisposition::Created);
+                assert_eq!(result.subscription_epoch, 1);
+                assert_eq!(response["status"], "accepted");
+                assert_eq!(response["replayed"], false);
+                assert_eq!(response["subscription_epoch"], 1);
+                assert_eq!(
+                    store.get_subscription(&enrollment.account_id).unwrap(),
+                    Some(enrollment.subscription.clone())
+                );
+                let queued_json: String = store
+                    .db
+                    .query_row(
+                        "SELECT event_json FROM encrypted_push_queue WHERE account_id=?1",
+                        [&enrollment.account_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let queued: Event = serde_json::from_str(&queued_json).unwrap();
+                assert_eq!(queued.version, expected_event.version);
+                assert_eq!(queued.instance, expected_event.instance);
+                assert_eq!(queued.subscription_epoch, expected_event.subscription_epoch);
+                assert_eq!(queued.key_id, expected_event.key_id);
+                assert_eq!(queued.import_id, expected_event.import_id);
+                assert_eq!(queued.kind, expected_event.kind);
+                assert_eq!(queued.code, expected_event.code);
+                assert_eq!(
+                    durable_account_snapshot(&store, &existing_a.account_id),
+                    before_a
+                );
+                assert_ne!(durable_snapshot(&store), before);
+            } else {
+                assert_eq!(case["expected_error"], "epoch_conflict");
+                assert_eq!(
+                    store.enroll(&enrollment, NOW + 1),
+                    Err(StoreError::EpochConflict)
+                );
+                assert_eq!(durable_snapshot(&store), before);
+                assert_eq!(
+                    durable_account_snapshot(&store, &existing_a.account_id),
+                    before_a
+                );
+                assert!(store.receipt_for(&enrollment).unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn inactive_first_adoption_and_reaffirmation_vectors_are_no_mutation_rejections() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v3/fixtures/first-v3-adoption-cases-v3.json"
+        ))
+        .unwrap();
+        for (index, case) in fixture["inactive_same_epoch_cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            let dir = TestDir::new();
+            let mut store = dir.store();
+            let candidate = match case["operation"].as_str().unwrap() {
+                "first_v3_adoption" => {
+                    let legacy = keyed_enrollment();
+                    store.enroll(&legacy, NOW).unwrap();
+                    v3_import_from(&legacy, 940 + index as u64, 20)
+                }
+                "same_epoch_reaffirmation" => {
+                    let first = v3_enrollment();
+                    store.enroll(&first, NOW).unwrap();
+                    v3_import_from(&first, 940 + index as u64, 2)
+                }
+                operation => panic!("unexpected inactive operation: {operation}"),
+            };
+            store
+                .db
+                .execute(
+                    "UPDATE encrypted_subscriptions SET state=?2 WHERE account_id=?1",
+                    params![ACCOUNT, case["row_state"].as_str().unwrap()],
+                )
+                .unwrap();
+            let before = durable_snapshot(&store);
+            let generation = private_generation(&store);
+            assert_eq!(
+                store.enroll(&candidate, NOW + 1),
+                Err(StoreError::EpochConflict),
+                "{}",
+                case["id"].as_str().unwrap()
+            );
+            assert!(store.receipt_for(&candidate).unwrap().is_none());
+            assert_eq!(durable_snapshot(&store), before);
+            assert_eq!(private_generation(&store), generation);
+        }
+    }
+
+    #[test]
+    fn same_epoch_reaffirmation_replaces_intent_and_inactive_reaffirmation_is_read_only() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let first = v3_enrollment();
+        store.enroll(&first, NOW).unwrap();
+        let first_event = event(&first, 905);
+        let first_generation = private_generation(&store);
+
+        let second = v3_import_from(&first, 906, 2);
+        store.enroll(&second, NOW + 1).unwrap();
+        let second_generation = private_generation(&store);
+        assert_ne!(second_generation, first_generation);
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        assert_eq!(
+            store.enqueue(ACCOUNT, &first_event, NOW + 2),
+            Err(StoreError::EpochConflict)
+        );
+        let current = store.claim_due(NOW + 2).unwrap().unwrap().event;
+        assert_eq!(
+            current.import_id.as_deref(),
+            Some(second.request_id.as_str())
+        );
+
+        store
+            .db
+            .execute(
+                "UPDATE encrypted_subscriptions SET state='stale' WHERE account_id=?1",
+                [ACCOUNT],
+            )
+            .unwrap();
+        let before_count: usize = store
+            .db
+            .query_row(
+                "SELECT count(*) FROM encrypted_enrollment_requests WHERE account_id=?1",
+                [ACCOUNT],
+                |r| row_count(r, 0),
+            )
+            .unwrap();
+        let before_queue: usize = store
+            .db
+            .query_row(
+                "SELECT count(*) FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+                |r| row_count(r, 0),
+            )
+            .unwrap();
+        let third = v3_import_from(&second, 907, 3);
+        assert_eq!(
+            store.enroll(&third, NOW + 3),
+            Err(StoreError::EpochConflict)
+        );
+        assert_eq!(private_generation(&store), second_generation);
+        assert_eq!(
+            store
+                .db
+                .query_row(
+                    "SELECT count(*) FROM encrypted_enrollment_requests WHERE account_id=?1",
+                    [ACCOUNT],
+                    |r| row_count(r, 0),
+                )
+                .unwrap(),
+            before_count
+        );
+        assert_eq!(
+            store
+                .db
+                .query_row(
+                    "SELECT count(*) FROM encrypted_push_queue WHERE account_id=?1",
+                    [ACCOUNT],
+                    |r| row_count(r, 0),
+                )
+                .unwrap(),
+            before_queue
+        );
+    }
+
+    #[test]
+    fn current_v3_receipt_status_retry_is_bounded_and_never_rotates_generation() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let current = v3_enrollment();
+        store.enroll(&current, NOW).unwrap();
+        let generation = private_generation(&store);
+        let initial_event: String = store
+            .db
+            .query_row(
+                "SELECT event_json FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let initial_event: Event = serde_json::from_str(&initial_event).unwrap();
+
+        assert!(store
+            .retry_current_import_status(&current, NOW + CONTROL_STATUS_RETRY_SECONDS)
+            .unwrap());
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        assert_eq!(private_generation(&store), generation);
+        let status_id_count: usize = store
+            .db
+            .query_row(
+                "SELECT count(*) FROM encrypted_push_event_ids WHERE status_retry_key=?1",
+                [&current.request_id],
+                |r| row_count(r, 0),
+            )
+            .unwrap();
+        assert_eq!(status_id_count, 1);
+
+        store
+            .db
+            .execute(
+                "DELETE FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+            )
+            .unwrap();
+        assert!(store
+            .retry_current_import_status(&current, NOW + CONTROL_STATUS_RETRY_SECONDS + 1)
+            .unwrap());
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        assert_eq!(private_generation(&store), generation);
+        let retried: String = store
+            .db
+            .query_row(
+                "SELECT event_json FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let retried: Event = serde_json::from_str(&retried).unwrap();
+        assert_ne!(retried.event_id, initial_event.event_id);
+        assert_eq!(retried.import_id, initial_event.import_id);
+        assert_eq!(retried.key_id, initial_event.key_id);
+        let latest_status_at: i64 = store
+            .db
+            .query_row(
+                "SELECT max(created_at) FROM encrypted_push_event_ids WHERE status_retry_key=?1",
+                [&current.request_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(latest_status_at, NOW + CONTROL_STATUS_RETRY_SECONDS + 1);
+
+        assert!(store
+            .retry_current_import_status(&current, NOW + CONTROL_STATUS_RETRY_SECONDS + 2)
+            .unwrap());
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        assert_eq!(private_generation(&store), generation);
+        let status_id_count_after_coalesce: usize = store
+            .db
+            .query_row(
+                "SELECT count(*) FROM encrypted_push_event_ids WHERE status_retry_key=?1",
+                [&current.request_id],
+                |r| row_count(r, 0),
+            )
+            .unwrap();
+        assert_eq!(status_id_count_after_coalesce, 2);
+
+        store
+            .db
+            .execute(
+                "UPDATE encrypted_subscriptions SET state='stale' WHERE account_id=?1",
+                [ACCOUNT],
+            )
+            .unwrap();
+        store
+            .db
+            .execute(
+                "DELETE FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+            )
+            .unwrap();
+        assert!(store
+            .retry_current_import_status(&current, NOW + 100)
+            .unwrap());
+        assert_eq!(store.pending_count(None).unwrap(), 0);
+        assert_eq!(private_generation(&store), generation);
+        assert_eq!(
+            store
+                .db
+                .query_row(
+                    "SELECT count(*) FROM encrypted_push_event_ids WHERE status_retry_key=?1",
+                    [&current.request_id],
+                    |r| row_count(r, 0),
+                )
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn enrollment_replay_coalesces_a_live_fourth_lease_and_retries_after_expiry() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let current = v3_enrollment();
+        store.enroll(&current, NOW).unwrap();
+        let generation = private_generation(&store);
+        let mut fourth_claim = None;
+
+        for (index, when) in [NOW, NOW + 5, NOW + 35, NOW + 155].into_iter().enumerate() {
+            let claim = store.claim_due(when).unwrap().unwrap();
+            assert_eq!(claim.attempt, index as u32 + 1);
+            if claim.attempt < MAX_ATTEMPTS {
+                store
+                    .complete(&claim, DeliveryOutcome::Retry { retry_after: None }, when)
+                    .unwrap();
+            } else {
+                fourth_claim = Some(claim);
+            }
+        }
+
+        let fourth_claim = fourth_claim.unwrap();
+        let original_event_id = fourth_claim.event.event_id.clone();
+        let live_lease_until = NOW + 155 + LEASE_SECONDS;
+        let before_live_replay = durable_snapshot(&store);
+        let replay = store.enroll(&current, NOW + 156).unwrap();
+        assert!(replay.replayed);
+        assert!(crate::enrollment::current_v3_replay_status(
+            &mut store,
+            &current,
+            &replay,
+            NOW + 156,
+        )
+        .unwrap());
+        assert_eq!(durable_snapshot(&store), before_live_replay);
+        assert_eq!(private_generation(&store), generation);
+        let leased: (u32, Option<i64>, Option<String>) = store
+            .db
+            .query_row(
+                "SELECT attempts,lease_until,lease_token FROM encrypted_push_queue WHERE event_id=?1",
+                [&original_event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(leased.0, MAX_ATTEMPTS);
+        assert_eq!(leased.1, Some(live_lease_until));
+        assert!(leased.2.is_some());
+        assert_eq!(store.pending_count(Some(ACCOUNT)).unwrap(), 1);
+
+        let retry_after_expiry = store.enroll(&current, live_lease_until).unwrap();
+        assert!(retry_after_expiry.replayed);
+        assert!(crate::enrollment::current_v3_replay_status(
+            &mut store,
+            &current,
+            &retry_after_expiry,
+            live_lease_until,
+        )
+        .unwrap());
+        assert_eq!(private_generation(&store), generation);
+        assert_eq!(store.pending_count(Some(ACCOUNT)).unwrap(), 1);
+        let replacement: (String, u32) = store
+            .db
+            .query_row(
+                "SELECT event_id,attempts FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_ne!(replacement.0, original_event_id);
+        assert_eq!(replacement.1, 0);
+        let retry_rows: usize = store
+            .db
+            .query_row(
+                "SELECT count(*) FROM encrypted_push_event_ids WHERE status_retry_key=?1",
+                [&current.request_id],
+                |row| row_count(row, 0),
+            )
+            .unwrap();
+        assert_eq!(retry_rows, 2);
+        let latest_status_at: i64 = store
+            .db
+            .query_row(
+                "SELECT max(created_at) FROM encrypted_push_event_ids WHERE status_retry_key=?1",
+                [&current.request_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(latest_status_at, live_lease_until);
+    }
+
+    #[test]
+    fn a_later_v3_wake_repeats_identity_after_import_status_is_lost() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let current = v3_enrollment();
+        store.enroll(&current, NOW).unwrap();
+        store
+            .db
+            .execute(
+                "DELETE FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+            )
+            .unwrap();
+
+        let subscription = store.get_subscription(ACCOUNT).unwrap().unwrap();
+        let wake = crate::push::new_event(&subscription, "wake", None).unwrap();
+        assert_eq!(wake.version, 3);
+        assert_eq!(wake.import_id.as_deref(), Some(current.request_id.as_str()));
+        store.enqueue(ACCOUNT, &wake, wake.issued_at).unwrap();
+        let stored: String = store
+            .db
+            .query_row(
+                "SELECT event_json FROM encrypted_push_queue WHERE event_id=?1",
+                [&wake.event_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let stored: Event = serde_json::from_str(&stored).unwrap();
+        assert_eq!(stored.key_id, wake.key_id);
+        assert_eq!(stored.import_id, wake.import_id);
+        assert_eq!(stored.code, None);
+    }
+
+    #[test]
+    fn v3_control_update_keeps_import_identity_and_uses_v3_confirmation() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let enrollment = v3_enrollment();
+        store.enroll(&enrollment, NOW).unwrap();
+        let connection = connection(&enrollment);
+        let generation = private_generation(&store);
+        let context = store
+            .control_context_for_connection(&connection, &generation)
+            .unwrap()
+            .unwrap();
+        let mut updated = context.subscription.clone();
+        updated.endpoint = "https://push.example.test/updated-v3".into();
+        updated.subscription_epoch += 1;
+        let mut confirmation = confirmation(&updated, 921, NOW);
+        confirmation.version = 3;
+        confirmation.key_id = Some(
+            event_key_id(
+                &enrollment.account_id,
+                enrollment.device_id,
+                &updated.instance,
+                enrollment.control_key.as_deref().unwrap(),
+            )
+            .unwrap(),
+        );
+        confirmation.import_id = Some(enrollment.request_id.clone());
+        assert_eq!(confirmation.version, 3);
+        assert_eq!(
+            confirmation.import_id.as_deref(),
+            Some(enrollment.request_id.as_str())
+        );
+        store
+            .apply_endpoint_update(
+                &connection,
+                &generation,
+                enrollment.control_key.as_deref().unwrap(),
+                &updated,
+                &[28; 32],
+                &confirmation,
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(private_generation(&store), generation);
+        let retained: (Option<String>, Option<i64>) = store
+            .db
+            .query_row(
+                "SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                [ACCOUNT],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(retained, (Some(enrollment.request_id.clone()), Some(1)));
+        let queued = store.claim_due(NOW).unwrap().unwrap().event;
+        assert_eq!(queued.code.as_deref(), Some("subscription_updated"));
+        assert_eq!(queued.version, 3);
+        assert_eq!(
+            queued.import_id.as_deref(),
+            Some(enrollment.request_id.as_str())
+        );
+    }
+
+    #[test]
+    fn historical_v3_receipt_does_not_requeue_or_confirm_a_replaced_intent() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let first = v3_enrollment();
+        store.enroll(&first, NOW).unwrap();
+        let second = v3_import_from(&first, 912, 2);
+        store.enroll(&second, NOW + 1).unwrap();
+        let generation = private_generation(&store);
+        let before = durable_snapshot(&store);
+
+        assert!(!store
+            .retry_current_import_status(&first, NOW + 100)
+            .unwrap());
+        assert_eq!(durable_snapshot(&store), before);
+        assert_eq!(private_generation(&store), generation);
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        let current: String = store
+            .db
+            .query_row(
+                "SELECT event_json FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let current: Event = serde_json::from_str(&current).unwrap();
+        assert_eq!(
+            current.import_id.as_deref(),
+            Some(second.request_id.as_str())
+        );
+    }
+
+    #[test]
+    fn receipt_created_after_cache_miss_is_classified_as_current_v3_replay() {
+        let dir = TestDir::new();
+        let mut delayed = dir.store();
+        let mut concurrent = dir.store();
+        let enrollment = v3_enrollment();
+
+        // This models the import request's receipt lookup before endpoint DNS.
+        assert!(delayed.receipt_for(&enrollment).unwrap().is_none());
+        assert!(!concurrent.enroll(&enrollment, NOW).unwrap().replayed);
+        let committed = durable_snapshot(&delayed);
+        let generation = private_generation(&delayed);
+
+        // The delayed request resumes after the competing process committed.
+        let receipt = delayed.enroll(&enrollment, NOW + 1).unwrap();
+        assert!(receipt.replayed);
+        assert!(crate::enrollment::current_v3_replay_status(
+            &mut delayed,
+            &enrollment,
+            &receipt,
+            NOW + 1,
+        )
+        .unwrap());
+        assert_eq!(durable_snapshot(&delayed), committed);
+        assert_eq!(private_generation(&delayed), generation);
+        assert_eq!(delayed.pending_count(Some(ACCOUNT)).unwrap(), 1);
+    }
+
+    #[test]
+    fn receipt_created_after_cache_miss_but_superseded_is_historical_and_read_only() {
+        let dir = TestDir::new();
+        let mut delayed = dir.store();
+        let mut concurrent = dir.store();
+        let first = v3_enrollment();
+
+        assert!(delayed.receipt_for(&first).unwrap().is_none());
+        concurrent.enroll(&first, NOW).unwrap();
+        let second = v3_import_from(&first, 928, 2);
+        concurrent.enroll(&second, NOW + 1).unwrap();
+
+        let receipt = delayed.enroll(&first, NOW + 2).unwrap();
+        assert!(receipt.replayed);
+        let before_retry = durable_snapshot(&delayed);
+        let generation = private_generation(&delayed);
+        assert!(!crate::enrollment::current_v3_replay_status(
+            &mut delayed,
+            &first,
+            &receipt,
+            NOW + 2,
+        )
+        .unwrap());
+        assert_eq!(durable_snapshot(&delayed), before_retry);
+        assert_eq!(private_generation(&delayed), generation);
+        assert_eq!(delayed.pending_count(Some(ACCOUNT)).unwrap(), 1);
+
+        let queued: String = delayed
+            .db
+            .query_row(
+                "SELECT event_json FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let queued: Event = serde_json::from_str(&queued).unwrap();
+        assert_eq!(
+            queued.import_id.as_deref(),
+            Some(second.request_id.as_str())
+        );
+    }
+
+    #[test]
+    fn v3_floor_rejects_stale_reused_and_legacy_requests_without_mutation() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let current = v3_import_from(&v3_enrollment(), 913, 8);
+        store.enroll(&current, NOW).unwrap();
+        let before = durable_snapshot(&store);
+        let generation = private_generation(&store);
+        let floor_before: (Option<String>, Option<i64>) = store
+            .db
+            .query_row(
+                "SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                [ACCOUNT],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+
+        let mut stale = v3_import_from(&current, 914, 7);
+        stale.subscription.subscription_epoch += 1;
+        stale.control_key = Some(URL_SAFE_NO_PAD.encode([25u8; 32]));
+        assert_eq!(
+            store.enroll(&stale, NOW + 1),
+            Err(StoreError::EpochConflict)
+        );
+
+        let equal = v3_import_from(&current, 915, 8);
+        assert_eq!(
+            store.enroll(&equal, NOW + 1),
+            Err(StoreError::EpochConflict)
+        );
+
+        let mut different_key = v3_import_from(&current, 916, 9);
+        different_key.control_key = Some(URL_SAFE_NO_PAD.encode([26u8; 32]));
+        assert_eq!(
+            store.enroll(&different_key, NOW + 1),
+            Err(StoreError::EpochConflict)
+        );
+
+        let mut conflicting_id = current.clone();
+        conflicting_id.import_seq = Some(9);
+        assert_eq!(
+            store.enroll(&conflicting_id, NOW + 1),
+            Err(StoreError::IdempotencyConflict)
+        );
+
+        let mut legacy = keyed_enrollment();
+        legacy.request_id = id(917);
+        assert_eq!(
+            store.enroll(&legacy, NOW + 1),
+            Err(StoreError::EpochConflict)
+        );
+
+        assert_eq!(durable_snapshot(&store), before);
+        assert_eq!(private_generation(&store), generation);
+        assert_eq!(
+            store
+                .db
+                .query_row(
+                    "SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                    [ACCOUNT],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap(),
+            floor_before
+        );
+    }
+
+    #[test]
+    fn imported_status_insert_failure_rolls_back_new_and_reaffirmed_intents() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let first = v3_enrollment();
+        store
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_enrollment_status BEFORE INSERT ON encrypted_push_queue
+                 WHEN json_extract(NEW.event_json,'$.code')='enrollment_imported'
+                 BEGIN SELECT RAISE(ABORT,'injected_status_failure'); END;",
+            )
+            .unwrap();
+        assert_eq!(store.enroll(&first, NOW), Err(StoreError::StateUnavailable));
+        assert!(store.get_subscription(ACCOUNT).unwrap().is_none());
+        assert!(store.receipt_for(&first).unwrap().is_none());
+        assert_eq!(store.pending_count(None).unwrap(), 0);
+        let connection_count: usize = store
+            .db
+            .query_row("SELECT count(*) FROM connections", [], |r| row_count(r, 0))
+            .unwrap();
+        assert_eq!(connection_count, 0);
+        store
+            .db
+            .execute_batch("DROP TRIGGER fail_enrollment_status;")
+            .unwrap();
+        store.enroll(&first, NOW).unwrap();
+
+        let before = durable_snapshot(&store);
+        let generation = private_generation(&store);
+        let reaffirmed = v3_import_from(&first, 920, 2);
+        store
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_enrollment_status BEFORE INSERT ON encrypted_push_queue
+                 WHEN json_extract(NEW.event_json,'$.code')='enrollment_imported'
+                 BEGIN SELECT RAISE(ABORT,'injected_status_failure'); END;",
+            )
+            .unwrap();
+        assert_eq!(
+            store.enroll(&reaffirmed, NOW + 1),
+            Err(StoreError::StateUnavailable)
+        );
+        assert_eq!(durable_snapshot(&store), before);
+        assert_eq!(private_generation(&store), generation);
+        assert!(store.receipt_for(&reaffirmed).unwrap().is_none());
+        let row: (Option<String>, Option<i64>) = store
+            .db
+            .query_row(
+                "SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                [ACCOUNT],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (Some(first.request_id), Some(1)));
+    }
+
+    #[test]
+    fn unkeyed_legacy_row_requires_exact_next_epoch_and_a_fresh_key_for_v3() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let legacy = enrollment();
+        store.enroll(&legacy, NOW).unwrap();
+
+        let mut invalid_same_epoch = v3_import_from(&legacy, 918, 5);
+        invalid_same_epoch.control_key = Some(URL_SAFE_NO_PAD.encode([27u8; 32]));
+        assert_eq!(
+            store.enroll(&invalid_same_epoch, NOW + 1),
+            Err(StoreError::EpochConflict)
+        );
+        assert_eq!(
+            store.get_subscription(ACCOUNT).unwrap(),
+            Some(legacy.subscription.clone())
+        );
+
+        let mut next_epoch = invalid_same_epoch;
+        next_epoch.request_id = id(919);
+        next_epoch.subscription.subscription_epoch = 2;
+        let result = store.enroll(&next_epoch, NOW + 2).unwrap();
+        assert_eq!(result.disposition, EnrollmentDisposition::Rotated);
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        assert_eq!(
+            store
+                .get_subscription(ACCOUNT)
+                .unwrap()
+                .unwrap()
+                .event_version(),
+            3
+        );
     }
 
     #[test]
@@ -2150,19 +3705,114 @@ mod tests {
 
     fn durable_snapshot(store: &PushStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
         [
-            "connections",
-            "encrypted_subscriptions",
-            "encrypted_enrollment_requests",
-            "encrypted_push_queue",
-            "encrypted_push_event_ids",
-            "encrypted_subscription_generations",
+            ("connections", "SELECT * FROM connections ORDER BY rowid"),
+            (
+                "encrypted_subscriptions",
+                "SELECT * FROM encrypted_subscriptions ORDER BY rowid",
+            ),
+            (
+                "encrypted_enrollment_requests",
+                "SELECT * FROM encrypted_enrollment_requests ORDER BY rowid",
+            ),
+            (
+                "encrypted_push_queue",
+                "SELECT * FROM encrypted_push_queue ORDER BY rowid",
+            ),
+            (
+                "encrypted_push_event_ids",
+                "SELECT * FROM encrypted_push_event_ids ORDER BY rowid",
+            ),
+            (
+                "encrypted_subscription_generations",
+                "SELECT * FROM encrypted_subscription_generations ORDER BY rowid",
+            ),
         ]
         .iter()
-        .map(|table| {
-            let mut statement = store
-                .db
-                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+        .map(|(_table, query)| {
+            let mut statement = store.db.prepare(query).unwrap();
+            let rows = statement
+                .query_map([], |row| {
+                    (0..row.as_ref().column_count())
+                        .map(|index| row.get(index))
+                        .collect::<rusqlite::Result<Vec<rusqlite::types::Value>>>()
+                })
                 .unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        })
+        .collect()
+    }
+
+    fn durable_account_snapshot(
+        store: &PushStore,
+        account_id: &str,
+    ) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        [
+            ("connections", "SELECT * FROM connections WHERE uuid=?1"),
+            (
+                "encrypted_subscriptions",
+                "SELECT * FROM encrypted_subscriptions WHERE account_id=?1",
+            ),
+            (
+                "encrypted_enrollment_requests",
+                "SELECT * FROM encrypted_enrollment_requests WHERE account_id=?1",
+            ),
+            (
+                "encrypted_push_queue",
+                "SELECT * FROM encrypted_push_queue WHERE account_id=?1",
+            ),
+            (
+                "encrypted_push_event_ids",
+                "SELECT * FROM encrypted_push_event_ids WHERE account_id=?1",
+            ),
+            (
+                "encrypted_subscription_generations",
+                "SELECT * FROM encrypted_subscription_generations WHERE account_id=?1",
+            ),
+        ]
+        .iter()
+        .map(|(_table, query)| {
+            let mut statement = store.db.prepare(query).unwrap();
+            let rows = statement
+                .query_map([account_id], |row| {
+                    (0..row.as_ref().column_count())
+                        .map(|index| row.get(index))
+                        .collect::<rusqlite::Result<Vec<rusqlite::types::Value>>>()
+                })
+                .unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        })
+        .collect()
+    }
+
+    // This projection intentionally ignores fields introduced in schema v5 so
+    // the schema-3 migration test can compare data that existed on both sides.
+    fn durable_snapshot_pre_v5(store: &PushStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        [
+            ("connections", "SELECT * FROM connections ORDER BY rowid"),
+            (
+                "encrypted_subscriptions",
+                "SELECT account_id,subscription_epoch,subscription_json,state,connection_device_id,connection_password,connection_endpoint,updated_at,control_key,last_control_digest,control_status_at FROM encrypted_subscriptions ORDER BY rowid",
+            ),
+            (
+                "encrypted_enrollment_requests",
+                "SELECT * FROM encrypted_enrollment_requests ORDER BY rowid",
+            ),
+            (
+                "encrypted_push_queue",
+                "SELECT * FROM encrypted_push_queue ORDER BY rowid",
+            ),
+            (
+                "encrypted_push_event_ids",
+                "SELECT event_id,account_id,event_digest,expires_at FROM encrypted_push_event_ids ORDER BY rowid",
+            ),
+            (
+                "encrypted_subscription_generations",
+                "SELECT * FROM encrypted_subscription_generations ORDER BY rowid",
+            ),
+        ]
+        .iter()
+        .map(|(_table, query)| {
+            let mut statement = store.db.prepare(query).unwrap();
             let rows = statement
                 .query_map([], |row| {
                     (0..row.as_ref().column_count())
@@ -2204,16 +3854,23 @@ mod tests {
         v1.account_id = id(900);
         store.enroll(&v1, NOW).unwrap();
         store.enqueue(&v1.account_id, &event(&v1, 91), NOW).unwrap();
-        let mut before = durable_snapshot(&store);
+        let mut before = durable_snapshot_pre_v5(&store);
         before.pop(); // Schema 3 has no generation table.
         store
             .db
-            .execute_batch("DROP TABLE encrypted_subscription_generations; PRAGMA user_version=3;")
+            .execute_batch(
+                "DROP TABLE encrypted_subscription_generations;
+                 ALTER TABLE encrypted_subscriptions DROP COLUMN import_id;
+                 ALTER TABLE encrypted_subscriptions DROP COLUMN import_seq;
+                 ALTER TABLE encrypted_push_event_ids DROP COLUMN status_retry_key;
+                 ALTER TABLE encrypted_push_event_ids DROP COLUMN created_at;
+                 PRAGMA user_version=3;",
+            )
             .unwrap();
         drop(store);
 
         let store = dir.store();
-        let mut after = durable_snapshot(&store);
+        let mut after = durable_snapshot_pre_v5(&store);
         after.pop();
         assert_eq!(after, before);
         assert!(store.receipt_for(&e).unwrap().unwrap().replayed);
@@ -2237,7 +3894,7 @@ mod tests {
         let dir = TestDir::new();
         let mut store = dir.store();
         store.enroll(&keyed_enrollment(), NOW).unwrap();
-        store.db.execute_batch("DROP TABLE encrypted_subscription_generations; DROP TRIGGER encrypted_connection_update_guard; PRAGMA user_version=3;").unwrap();
+        store.db.execute_batch("DROP TABLE encrypted_subscription_generations; ALTER TABLE encrypted_subscriptions DROP COLUMN import_id; ALTER TABLE encrypted_subscriptions DROP COLUMN import_seq; ALTER TABLE encrypted_push_event_ids DROP COLUMN status_retry_key; ALTER TABLE encrypted_push_event_ids DROP COLUMN created_at; DROP TRIGGER encrypted_connection_update_guard; PRAGMA user_version=3;").unwrap();
         drop(store);
         assert!(matches!(
             PushStore::open(dir.path()),
@@ -2496,7 +4153,7 @@ mod tests {
         let co = connection(&e);
         let generation = private_generation(&store);
         store.enqueue(ACCOUNT, &event(&e, 180), NOW).unwrap();
-        store.db.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1) INSERT INTO encrypted_push_event_ids SELECT printf('capacity-%d',x),?2,'synthetic-digest',?3 FROM n", params![(MAX_EVENT_IDS - 1) as i64, ACCOUNT, NOW + 300]).unwrap();
+        store.db.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1) INSERT INTO encrypted_push_event_ids(event_id,account_id,event_digest,expires_at) SELECT printf('capacity-%d',x),?2,'synthetic-digest',?3 FROM n", params![(MAX_EVENT_IDS - 1) as i64, ACCOUNT, NOW + 300]).unwrap();
         let mut updated = e.subscription.clone();
         updated.endpoint.push_str("-new");
         updated.subscription_epoch = 12;
@@ -3414,7 +5071,7 @@ mod tests {
             .execute("DELETE FROM encrypted_push_event_ids", [])
             .unwrap();
         // Construct a boundary-sized retained ledger without thousands of fsyncs.
-        store.db.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<8192) INSERT INTO encrypted_push_event_ids SELECT printf('fixture-%d',x),?1,'fixture-digest',?2 FROM n",params![ACCOUNT,NOW+300]).unwrap();
+        store.db.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<8192) INSERT INTO encrypted_push_event_ids(event_id,account_id,event_digest,expires_at) SELECT printf('fixture-%d',x),?1,'fixture-digest',?2 FROM n",params![ACCOUNT,NOW+300]).unwrap();
         assert_eq!(
             store.enqueue(ACCOUNT, &event(&e, 999), NOW),
             Err(StoreError::QueueFull)
@@ -3428,7 +5085,7 @@ mod tests {
         second.account_id = id(9);
         second.request_id = id(10);
         store.enroll(&second, NOW).unwrap();
-        store.db.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<4096) INSERT INTO encrypted_push_event_ids SELECT printf('fixture-%d',x),?1,'fixture-digest',?2 FROM n",params![ACCOUNT,NOW+300]).unwrap();
+        store.db.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<4096) INSERT INTO encrypted_push_event_ids(event_id,account_id,event_digest,expires_at) SELECT printf('fixture-%d',x),?1,'fixture-digest',?2 FROM n",params![ACCOUNT,NOW+300]).unwrap();
         store.db.execute("INSERT INTO encrypted_push_queue(event_id,account_id,subscription_epoch,event_json,expires_at,attempts,next_attempt_at) SELECT event_id,account_id,1,'{}',expires_at,0,?1 FROM encrypted_push_event_ids",[NOW]).unwrap();
         assert_eq!(
             store.enqueue(&second.account_id, &event(&second, 999), NOW),

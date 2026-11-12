@@ -10,6 +10,7 @@ Only temporary TLS keys and public synthetic enrollment keys are used.
 import argparse
 import base64
 import hashlib
+import hmac
 import importlib.util
 import json
 import os
@@ -26,6 +27,25 @@ from server_cli import (
     ACCOUNT, ENDPOINT_PATH, NOT_RUN, PASSWORD, ROOT, CheckFailure, Harness, Provider,
     fresh_port, private_file, require,
 )
+
+
+def event_key_id(enrollment):
+    """Independently derive the canonical v3 control-key identity."""
+    account = uuid.UUID(enrollment["account_id"]).bytes
+    device = enrollment["device_id"].to_bytes(4, "big")
+    instance = enrollment["subscription"]["instance"].encode("ascii")
+    control_key = base64.urlsafe_b64decode(
+        enrollment["control_key"] + "=" * (-len(enrollment["control_key"]) % 4)
+    )
+    message = (
+        b"COLLIESOCKET-EVENT-KEY-ID\0\x03"
+        + account
+        + device
+        + len(instance).to_bytes(2, "big")
+        + instance
+    )
+    digest = hmac.new(control_key, message, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
 class SignalHarness(Harness):
@@ -137,6 +157,181 @@ class SignalHarness(Harness):
                 "provider acceptance did not finish the encrypted wake attempt")
         return body
 
+    def capture_v3_provider_request(
+        self, enrollment, sent_at, expected_event_id, expected_kind, expected_code=None
+    ):
+        """Decrypt one actual provider POST and verify its v3 import/key identity."""
+        path, headers, body = self.provider.take(timeout=5)
+        require(path == ENDPOINT_PATH, "v3 event reached the wrong provider endpoint")
+        require(len(body) == 4096, "v3 event is not a fixed-size encrypted push")
+        require(body[20] == 65 and body[21] == 4, "v3 event has invalid sender-key framing")
+        require(headers.get("content-type") == "application/octet-stream",
+                "v3 event lacks binary media type")
+        require(headers.get("content-encoding") == "aes128gcm",
+                "v3 event lacks encrypted content encoding")
+        require(headers.get("content-length") == "4096", "v3 event has incorrect Content-Length")
+        require(headers.get("urgency") == "normal" and "topic" not in headers,
+                "v3 event exposed unexpected clear routing metadata")
+        require(1 <= int(headers.get("ttl", "0")) <= 300,
+                "v3 event has unbounded provider TTL")
+        clear_headers = json.dumps(headers)
+        expected_key_id = event_key_id(enrollment)
+        for marker in [
+            PASSWORD,
+            enrollment["account_id"],
+            enrollment["password"],
+            enrollment["subscription"]["instance"],
+            enrollment["subscription"]["p256dh"],
+            enrollment["subscription"]["auth"],
+            enrollment["control_key"],
+            expected_key_id,
+        ]:
+            require(marker not in clear_headers and marker.encode() not in body,
+                    "v3 event exposed private material outside encryption")
+
+        auth = self.checker.b64(enrollment["subscription"]["auth"])
+        plaintext = self.checker.decrypt(body, self.private, auth)
+        encoded_event = plaintext.rstrip(b" ")
+        require(len(plaintext) == 3993 and len(encoded_event) <= 3072
+                and plaintext == encoded_event.ljust(3993, b" "),
+                "v3 event violated fixed application padding")
+        event = json.loads(encoded_event)
+        required = {
+            "version", "event_id", "instance", "subscription_epoch", "kind",
+            "issued_at", "expires_at", "key_id", "import_id",
+        }
+        if expected_kind == "status":
+            required.add("code")
+        require(set(event) == required, "v3 event has an unexpected schema")
+        require(type(event["version"]) is int and event["version"] == 3
+                and type(event["subscription_epoch"]) is int
+                and event["subscription_epoch"] == enrollment["subscription"]["subscription_epoch"],
+                "v3 event has the wrong version or enrollment epoch")
+        require(event["instance"] == enrollment["subscription"]["instance"]
+                and event["kind"] == expected_kind,
+                "v3 event has the wrong instance or kind")
+        require(event["event_id"] == expected_event_id,
+                "decrypted v3 event differs from its durable event ID")
+        event_uuid = uuid.UUID(event["event_id"])
+        import_uuid = uuid.UUID(event["import_id"])
+        require(event_uuid.version == 4 and str(event_uuid) == event["event_id"],
+                "v3 event ID is not canonical UUIDv4")
+        require(import_uuid.version == 4
+                and event["import_id"] == enrollment["request_id"],
+                "v3 event does not identify the imported request")
+        require(event["key_id"] == expected_key_id,
+                "v3 event key identity does not match the imported control key/context")
+        if expected_code is not None:
+            require(event["code"] == expected_code, "v3 status code differs from expectation")
+        require(type(event["issued_at"]) is int and type(event["expires_at"]) is int,
+                "v3 event timestamps are not JSON integers")
+        require(sent_at <= event["issued_at"] <= int(time.time()),
+                "v3 event timestamp is outside the import/wake window")
+        require(event["expires_at"] - event["issued_at"] == 300,
+                "v3 event lifetime differs from the contract")
+
+        deadline = time.monotonic() + 5
+        while self.queued() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        require(self.queued() == 0 and self.current()["state"] == "active",
+                "provider acceptance did not finish the v3 event attempt")
+        self.captured_v3_bodies.append({
+            "kind": expected_kind,
+            "code": event.get("code"),
+            "body_base64": base64.b64encode(body).decode("ascii"),
+            "body_length": len(body),
+            "body_sha256": hashlib.sha256(body).hexdigest(),
+            "event": event,
+            "transport": {
+                "headers": {
+                    name: headers[name]
+                    for name in ("content-type", "content-encoding", "content-length", "urgency", "ttl")
+                    if name in headers
+                },
+            },
+        })
+        return body, event
+
+    def send_v3_wake(self, signal, enrollment):
+        """Have the real Signal worker queue and deliver one identity-bound v3 wake."""
+        previous = self.event_ids()
+        sent_at = int(time.time())
+        signal.wait_ack(signal.send_envelope(
+            signal_envelope(urgent=True), request_id=(1 << 40) + 3
+        ))
+        self.barrier(signal)
+        created = self.event_ids() - previous
+        require(len(created) == 1, "v3 Signal wake did not record exactly one event ID")
+        event_id = created.pop()
+        return self.capture_v3_provider_request(
+            enrollment, sent_at, event_id, "wake"
+        )
+
+    def v3_private_import_and_worker_events(self):
+        """Exercise import status and Signal wake through real encrypted HTTP sends."""
+        self.stage = "synthetic v3 private import and worker delivery"
+        current = self.current()
+        require(current["state"] == "active" and current["subscription_epoch"] == 1,
+                "v3 test did not begin from the active v1 fixture")
+        enrollment = json.loads(json.dumps(self.enrollment))
+        control_key = bytes(range(32))
+        enrollment.update(
+            enrollment_version=3,
+            request_id=str(uuid.uuid4()),
+            import_seq=1,
+            control_key=base64.urlsafe_b64encode(control_key).rstrip(b"=").decode("ascii"),
+        )
+        enrollment["subscription"].update(
+            subscription_epoch=current["subscription_epoch"] + 1,
+            supported_event_versions=[1, 2, 3],
+        )
+        expected_key_id = event_key_id(enrollment)
+        self.captured_v3_bodies = []
+        self.v3_control_key = enrollment["control_key"]
+        self.stage = "v3 private import receipt and enrollment_imported queue"
+        sent_at = int(time.time())
+        receipt = self.import_value(enrollment)
+        require(receipt["enrollment_version"] == 3
+                and receipt["request_id"] == enrollment["request_id"]
+                and receipt["subscription_epoch"] == 2
+                and receipt["selected_event_version"] == 3
+                and receipt["status"] == "accepted"
+                and receipt["replayed"] is False,
+                "v3 private import returned an unexpected receipt")
+        require("key_id" not in receipt and "import_seq" not in receipt,
+                "v3 import receipt exposed internal key or sequence metadata")
+        queued_events = self.rows(
+            "SELECT event_id FROM encrypted_push_queue WHERE account_id=?", (ACCOUNT,)
+        )
+        ledger_count = self.rows(
+            "SELECT count(*) FROM encrypted_push_event_ids WHERE account_id=?", (ACCOUNT,)
+        )[0][0]
+        require(len(queued_events) == 1 and self.current()["event_version"] == 3,
+                f"v3 import did not activate a single v3 status event (queued={len(queued_events)}, ledger={ledger_count})")
+        status_event_id = queued_events[0][0]
+        credentials = f"{ACCOUNT}.{enrollment['device_id']}:{PASSWORD}"
+
+        with FakeSignal(self.directory / "v3-signal-tls", credentials) as signal:
+            try:
+                self.start_signal_worker(signal)
+                signal.wait_connected()
+                self.mark("real worker authenticates the synthetic Signal device after v3 private import")
+                self.capture_v3_provider_request(
+                    enrollment, sent_at, status_event_id, "status", "enrollment_imported"
+                )
+                self.mark("real worker sends encrypted enrollment_imported; independent decrypt matches import_id and HMAC key_id")
+                self.require_no_push()
+
+                self.stage = "authenticated Signal wake produces v3 encrypted provider request"
+                _, wake_event = self.send_v3_wake(signal, enrollment)
+                require(wake_event["key_id"] == expected_key_id
+                        and wake_event["import_id"] == enrollment["request_id"],
+                        "v3 wake did not retain the active import identity")
+                self.mark("urgent Signal envelope produces an independently decrypted v3 wake with the active import identity")
+                self.require_no_push()
+            finally:
+                self.stop_worker()
+
     def run(self):
         """Exercise dispatch, suppression, TLS verification and redaction with synthetic peers."""
         self.stage = "test-signal build preflight (cargo build --locked --features test-signal)"
@@ -206,12 +401,15 @@ class SignalHarness(Harness):
             finally:
                 self.stop_worker()
 
+        self.v3_private_import_and_worker_events()
+
         self.stage = "Signal transport log redaction"
         joined = b"\n".join(self.outputs)
         for marker in [PASSWORD, base64.b64encode(credentials.encode()).decode(),
                        "SYNTHETIC-SIGNAL-CONTENT-CANARY", "SYNTHETIC-ENDPOINT-CANARY",
                        "SYNTHETIC-QUERY-CANARY", self.metadata["auth"],
-                       self.metadata["p256dh"], self.metadata["receiver_private"]]:
+                       self.metadata["p256dh"], self.metadata["receiver_private"],
+                       self.v3_control_key]:
             require(marker.encode() not in joined, "Signal transport logs exposed a synthetic secret canary")
         self.mark("trace logging keeps Signal credentials, frame content and push secrets redacted")
 
@@ -221,6 +419,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/mollysocket")
     parser.add_argument("--output", type=Path, help="optional redacted JSON result path")
+    parser.add_argument(
+        "--capture-v3-body", type=Path,
+        help="optional private base64 artifact with synthetic v3 provider ciphertext bodies",
+    )
     arguments = parser.parse_args()
     binary = arguments.binary.resolve()
     if not binary.is_file():
@@ -239,6 +441,7 @@ def main():
         "openssl": checker.backend.openssl_version_text(), "checks": [], "not_run": NOT_RUN,
     }
     provider = Provider()
+    harness = None
     try:
         with tempfile.TemporaryDirectory(prefix="colliesocket-signal-") as temporary:
             directory = Path(temporary)
@@ -265,6 +468,27 @@ def main():
     finally:
         provider.close()
         os.umask(previous_umask)
+    if arguments.capture_v3_body and result["result"] == "PASS":
+        try:
+            require(harness is not None and len(harness.captured_v3_bodies) == 2,
+                    "v3 body capture did not observe both status and wake")
+            artifact_path = arguments.capture_v3_body.resolve()
+            artifact_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            artifact = {
+                "synthetic_only": True,
+                "scope": "captured loopback provider POST bodies; not device delivery",
+                "events": harness.captured_v3_bodies,
+            }
+            private_file(artifact_path, json.dumps(artifact, indent=2).encode() + b"\n")
+            result["v3_capture_artifact"] = str(artifact_path)
+            result["v3_captured_bodies"] = [
+                {key: event[key] for key in ("kind", "code", "body_length", "body_sha256")}
+                for event in harness.captured_v3_bodies
+            ]
+        except (CheckFailure, OSError) as failure:
+            result["result"] = "FAIL"
+            result["failure"] = str(failure) if isinstance(failure, CheckFailure) else type(failure).__name__
+            result["stage"] = "v3 body artifact capture"
     rendered = json.dumps(result, indent=2) + "\n"
     if arguments.output:
         private_file(arguments.output, rendered.encode())
