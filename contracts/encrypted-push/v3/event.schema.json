@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cwa/colliesocket/contracts/encrypted-push/v3/event.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "event_id",
+    "instance",
+    "subscription_epoch",
+    "kind",
+    "issued_at",
+    "expires_at",
+    "key_id",
+    "import_id"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 3
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?![\\s\\S])",
+      "minLength": 36,
+      "maxLength": 36
+    },
+    "instance": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9._:-]{1,128})(?![\\s\\S])",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "subscription_epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "wake",
+        "test",
+        "status"
+      ]
+    },
+    "issued_at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "expires_at": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "connection_conflict",
+        "connection_unavailable",
+        "subscription_updated",
+        "enrollment_imported"
+      ]
+    },
+    "key_id": {
+      "type": "string",
+      "description": "Canonical unpadded base64url encoding of all 32 HMAC-SHA-256 bytes.",
+      "pattern": "^(?:[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048])(?![\\s\\S])",
+      "minLength": 43,
+      "maxLength": 43
+    },
+    "import_id": {
+      "type": "string",
+      "description": "The request_id that established the current v3 import generation.",
+      "pattern": "^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?![\\s\\S])",
+      "minLength": 36,
+      "maxLength": 36
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "status"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "code"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "code"
+          ]
+        }
+      }
+    }
+  ]
+}
