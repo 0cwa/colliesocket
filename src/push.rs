@@ -73,6 +73,7 @@ pub fn enrolled(account: &str) -> Result<bool, &'static str> {
 }
 pub fn enqueue_for_connection(
     co: &crate::db::Connection,
+    expected_generation: &str,
     kind: &str,
     code: Option<&str>,
 ) -> Result<bool, &'static str> {
@@ -81,14 +82,20 @@ pub fn enqueue_for_connection(
     }
     let mut store = PushStore::open(config::get_db()).map_err(|e| e.code())?;
     let Some(sub) = store
-        .subscription_for_connection(&co.uuid, co.device_id, &co.password, &co.endpoint)
+        .subscription_for_connection(
+            &co.uuid,
+            co.device_id,
+            &co.password,
+            &co.endpoint,
+            expected_generation,
+        )
         .map_err(|e| e.code())?
     else {
         return Ok(false);
     };
     // Preserve this exact snapshot through enqueue's transactional epoch check.
     let event = new_event(&sub, kind, code)?;
-    match store.enqueue(&co.uuid, &event, event.issued_at) {
+    match store.enqueue_for_connection(co, expected_generation, &event, event.issued_at) {
         Ok(queued) => Ok(queued),
         Err(
             StoreError::EpochConflict

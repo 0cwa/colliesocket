@@ -96,6 +96,15 @@ fn subscription() -> Subscription {
         .unwrap()
 }
 
+fn signal_socket(endpoint: &str) -> SignalWebSocket {
+    let co = crate::db::Connection::new(ACCOUNT.into(), 2, PASSWORD.into(), endpoint.into());
+    let generation = PushStore::open(config::get_db())
+        .unwrap()
+        .private_generation_for_connection(&co)
+        .unwrap();
+    SignalWebSocket::new(ACCOUNT, 2, PASSWORD, endpoint, true, generation).unwrap()
+}
+
 fn queued() -> u32 {
     database()
         .query_row("SELECT count(*) FROM encrypted_push_queue", [], |row| {
@@ -113,6 +122,7 @@ fn snapshot() -> Vec<Vec<Vec<rusqlite::types::Value>>> {
         "encrypted_enrollment_requests",
         "encrypted_push_queue",
         "encrypted_push_event_ids",
+        "encrypted_subscription_generations",
     ]
     .iter()
     .map(|table| {
@@ -388,7 +398,7 @@ async fn fake_signal_rotates_endpoint_before_ack_and_rejects_replay_and_forgery(
 
     let signal = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut socket = LocalSignal {
-        inner: SignalWebSocket::new(ACCOUNT, 2, PASSWORD, &old_endpoint, true).unwrap(),
+        inner: signal_socket(&old_endpoint),
         url: format!("ws://{}/", signal.local_addr().unwrap()),
     };
     let payload = update(&new_endpoint, &new_key, &new_auth);
@@ -581,7 +591,7 @@ async fn fake_signal_rotates_endpoint_before_ack_and_rejects_replay_and_forgery(
     // Reconnect and retry exactly the interrupted blob: no operation was lost
     // and no private re-import or externally reachable enrollment port is used.
     let mut socket = LocalSignal {
-        inner: SignalWebSocket::new(ACCOUNT, 2, PASSWORD, &recovered_endpoint, true).unwrap(),
+        inner: signal_socket(&recovered_endpoint),
         url: format!("ws://{}/", signal.local_addr().unwrap()),
     };
     let server = async {
@@ -606,5 +616,99 @@ async fn fake_signal_rotates_endpoint_before_ack_and_rejects_replay_and_forgery(
     .expect("retry session timed out");
     assert_eq!(subscription().endpoint, failed_endpoint);
     assert_eq!(subscription().instance, "fake-signal-instance");
+    assert_eq!(queued(), 0);
+
+    // The old socket keeps the same account/device/password/endpoint through
+    // two private key rotations, including A -> B -> A. Only its generation
+    // distinguishes it from the successor; refreshing the key on each callback
+    // would incorrectly authorize it again.
+    let obsolete_generation = socket.inner.private_generation.clone().unwrap();
+    let obsolete_connection = socket.inner.current_connection().unwrap();
+    let mut imported = enrollment.clone();
+    imported.subscription = subscription();
+    for key in [[0x37; 32], KEY] {
+        imported.request_id = push::uuid_v4().unwrap();
+        imported.control_key = Some(URL_SAFE_NO_PAD.encode(key));
+        imported.subscription.subscription_epoch += 1;
+        enrollment::import(&serde_json::to_vec(&imported).unwrap())
+            .await
+            .unwrap();
+    }
+    assert_eq!(subscription().subscription_epoch, 8);
+    let after_private_endpoint = format!("{origin}/after-private");
+    let after_private = frame_for(
+        ACCOUNT,
+        2,
+        12,
+        &update(&after_private_endpoint, &new_key, &recovered_auth),
+    );
+    let before = snapshot();
+    *socket.inner.push_instant.lock().unwrap() = Instant::now() - Duration::from_secs(2);
+    let server = async {
+        let (stream, _) = signal.accept().await.unwrap();
+        let mut peer = accept_async(stream).await.unwrap();
+        send(&mut peer, 60, after_private.clone(), true).await;
+        ack(&mut peer, 60).await;
+        assert_eq!(snapshot(), before);
+        send(&mut peer, 61, b"ordinary Signal ciphertext".to_vec(), true).await;
+        ack(&mut peer, 61).await;
+        assert_eq!(snapshot(), before);
+        let _ = peer.close(None).await;
+    };
+    let _ = timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            socket.connect(native_tls::TlsConnector::new().unwrap()),
+            server
+        )
+    })
+    .await
+    .expect("obsolete socket session timed out");
+    *socket.inner.push_instant.lock().unwrap() =
+        Instant::now() - super::DELIVERY_CHECK_TIMEOUT - Duration::from_secs(1);
+    socket.inner.push_delivery_check().await.unwrap();
+    let legacy_db = crate::db::MollySocketDb::open(config::get_db()).unwrap();
+    assert!(!legacy_db
+        .forbid_if_current(&obsolete_connection, Some(&obsolete_generation))
+        .unwrap());
+    assert_eq!(snapshot(), before);
+
+    // A newly bound socket accepts that same valid frame, including a skipped
+    // epoch, and its following ordinary wake uses the newly committed endpoint.
+    let mut replacement = LocalSignal {
+        inner: signal_socket(&failed_endpoint),
+        url: format!("ws://{}/", signal.local_addr().unwrap()),
+    };
+    assert_ne!(
+        replacement.inner.private_generation.as_ref(),
+        Some(&obsolete_generation)
+    );
+    let server = async {
+        let (stream, _) = signal.accept().await.unwrap();
+        let mut peer = accept_async(stream).await.unwrap();
+        send(&mut peer, 62, after_private, false).await;
+        committed_before_ack(&mut peer, 62, 12).await;
+        let captured = drain_capture(&provider, 202).await;
+        assert_eq!(captured.path, "/after-private");
+        let event = decrypt_push(&captured.body, &new_key, &recovered_auth).unwrap();
+        assert_eq!(event["code"], "subscription_updated");
+        assert_eq!(event["subscription_epoch"], 12);
+        send(&mut peer, 63, b"ordinary Signal ciphertext".to_vec(), true).await;
+        ack(&mut peer, 63).await;
+        let captured = drain_capture(&provider, 202).await;
+        assert_eq!(captured.path, "/after-private");
+        let event = decrypt_push(&captured.body, &new_key, &recovered_auth).unwrap();
+        assert_eq!(event["kind"], "wake");
+        assert_eq!(event["subscription_epoch"], 12);
+        let _ = peer.close(None).await;
+    };
+    let _ = timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            replacement.connect(native_tls::TlsConnector::new().unwrap()),
+            server
+        )
+    })
+    .await
+    .expect("replacement socket session timed out");
+    assert_eq!(subscription().endpoint, after_private_endpoint);
     assert_eq!(queued(), 0);
 }

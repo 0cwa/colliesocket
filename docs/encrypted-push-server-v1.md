@@ -299,7 +299,7 @@ existing database. Before migration:
 3. Verify service ownership, parent mode 0700, and DB/sidecar mode 0600. Existing
    unsafe paths fail closed; migration is not a permission-repair command.
 4. Run the selected candidate's `migrate` command under the service account.
-   Check the successful `{"schema_version":2}` response, then private readiness
+   Check the successful `{"schema_version":4}` response, then private readiness
    and the candidate's synthetic smoke checks before considering real use.
 
 The implementation rejects future schema versions and rolls back interrupted

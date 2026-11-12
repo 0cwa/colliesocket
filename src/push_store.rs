@@ -14,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashSet, fmt, fs, path::Path, time::Duration};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 pub const MAX_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_EVENT_BYTES: usize = 3072;
 pub const MAX_ACCOUNTS: usize = 4096;
@@ -577,6 +577,13 @@ impl PushStore {
                     [&enrollment.account_id],
                 )?;
             }
+            // Private replacement revokes every earlier socket, even when its
+            // credential tuple and control key later return to old values.
+            // Controls and idempotent imports deliberately retain this token.
+            tx.execute(
+                "INSERT INTO encrypted_subscription_generations(account_id,generation) VALUES(?1,?2) ON CONFLICT(account_id) DO UPDATE SET generation=excluded.generation",
+                params![enrollment.account_id, token()?],
+            )?;
         }
         tx.execute("INSERT INTO encrypted_enrollment_requests(account_id,request_id,request_digest,subscription_epoch,disposition,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
             params![enrollment.account_id,enrollment.request_id,hash,enrollment.subscription.subscription_epoch as i64,disposition.as_str(),now])?;
@@ -602,16 +609,32 @@ impl PushStore {
             .transpose()
     }
 
-    /// A key is available only to the current, non-forbidden socket tuple.
+    /// Capture once before connecting, never refresh it from a socket callback.
+    /// A new private import revokes the generation while controls retain it.
+    pub fn private_generation_for_connection(
+        &self,
+        co: &crate::db::Connection,
+    ) -> Result<Option<String>> {
+        let generation: Option<String> = self.db.query_row(
+            "SELECT g.generation FROM encrypted_subscription_generations g JOIN connections c ON c.uuid=g.account_id WHERE c.uuid=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0",
+            params![co.uuid,co.device_id,co.password,co.endpoint], |r| r.get(0)).optional()?;
+        if let Some(generation) = &generation {
+            key_bytes(generation, 32).map_err(|_| StoreError::StateUnavailable)?;
+        }
+        Ok(generation)
+    }
+
+    /// A key is available only to the current, non-forbidden socket generation.
     /// Endpoint changes made by control must be reflected in that tuple before
     /// processing the next message; a replaced private import stays obsolete.
     pub fn control_context_for_connection(
         &self,
         co: &crate::db::Connection,
+        expected_generation: &str,
     ) -> Result<Option<ControlContext>> {
         let row: Option<(String, String)> = self.db.query_row(
-            "SELECT s.subscription_json,s.control_key FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND s.control_key IS NOT NULL",
-            params![co.uuid,co.device_id,co.password,co.endpoint],
+            "SELECT s.subscription_json,s.control_key FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id JOIN encrypted_subscription_generations g ON g.account_id=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND s.control_key IS NOT NULL AND g.generation=?5",
+            params![co.uuid,co.device_id,co.password,co.endpoint,expected_generation],
             |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
         row.map(|(json, control_key)| {
             let subscription: Subscription = serde_json::from_str(&json)?;
@@ -636,6 +659,7 @@ impl PushStore {
     pub fn apply_endpoint_update(
         &mut self,
         co: &crate::db::Connection,
+        expected_generation: &str,
         expected_key: &str,
         new_subscription: &Subscription,
         wire_digest: &[u8; 32],
@@ -659,8 +683,8 @@ impl PushStore {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current: Option<(String, String, Option<String>, Option<i64>, String)> = tx.query_row(
-            "SELECT s.subscription_json,s.control_key,s.last_control_digest,s.control_status_at,s.state FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND s.control_key IS NOT NULL",
-            params![co.uuid,co.device_id,co.password,co.endpoint],
+            "SELECT s.subscription_json,s.control_key,s.last_control_digest,s.control_status_at,s.state FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id JOIN encrypted_subscription_generations g ON g.account_id=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND s.control_key IS NOT NULL AND g.generation=?5",
+            params![co.uuid,co.device_id,co.password,co.endpoint,expected_generation],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
         let (json, control_key, previous_digest, last_status, state) =
             current.ok_or(StoreError::SubscriptionMissing)?;
@@ -712,7 +736,8 @@ impl PushStore {
     }
 
     /// Build an event from this exact snapshot, then pass it directly to
-    /// `enqueue`, which rejects intervening epoch/instance changes atomically.
+    /// `enqueue_for_connection`, which rechecks the generation and forbidden
+    /// flag together with the event's epoch/instance inside its transaction.
     /// Endpoint must be the original string, not a URL-normalized rendering.
     pub fn subscription_for_connection(
         &self,
@@ -720,10 +745,11 @@ impl PushStore {
         device_id: u32,
         password: &str,
         endpoint: &str,
+        expected_generation: &str,
     ) -> Result<Option<Subscription>> {
         let value: Option<String> = self.db.query_row(
-            "SELECT s.subscription_json FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4",
-            params![account_id,device_id,password,endpoint], |r| r.get(0)).optional()?;
+            "SELECT s.subscription_json FROM encrypted_subscriptions s JOIN connections c ON c.uuid=s.account_id JOIN encrypted_subscription_generations g ON g.account_id=s.account_id WHERE s.account_id=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND g.generation=?5",
+            params![account_id,device_id,password,endpoint,expected_generation], |r| r.get(0)).optional()?;
         value
             .map(|s| serde_json::from_str(&s).map_err(StoreError::from))
             .transpose()
@@ -792,6 +818,30 @@ impl PushStore {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let queued = enqueue_event(&tx, account_id, event, now)?;
+        tx.commit()?;
+        Ok(queued)
+    }
+
+    /// Recheck the socket's private generation and credentials in the same
+    /// transaction as enqueue. Rejected callbacks must not even prune the queue.
+    pub fn enqueue_for_connection(
+        &mut self,
+        co: &crate::db::Connection,
+        expected_generation: &str,
+        event: &Event,
+        now: i64,
+    ) -> Result<bool> {
+        event.validate(now)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM connections c JOIN encrypted_subscription_generations g ON g.account_id=c.uuid WHERE c.uuid=?1 AND c.device_id=?2 AND c.password=?3 AND c.endpoint=?4 AND c.forbidden=0 AND g.generation=?5)",
+            params![co.uuid,co.device_id,co.password,co.endpoint,expected_generation], |r| r.get(0))?;
+        if !current {
+            return Ok(false);
+        }
+        let queued = enqueue_event(&tx, &co.uuid, event, now)?;
         tx.commit()?;
         Ok(queued)
     }
@@ -1157,6 +1207,7 @@ fn verify_schema(db: &Connection) -> Result<()> {
         ("table", "encrypted_enrollment_requests"),
         ("table", "encrypted_push_event_ids"),
         ("table", "encrypted_push_queue"),
+        ("table", "encrypted_subscription_generations"),
         ("trigger", "encrypted_connection_insert_guard"),
         ("trigger", "encrypted_connection_update_guard"),
         ("trigger", "encrypted_connection_delete_guard"),
@@ -1172,6 +1223,7 @@ fn verify_schema(db: &Connection) -> Result<()> {
     }
     // A schema marker alone must not make a partially migrated store usable.
     db.prepare("SELECT control_key,last_control_digest,control_status_at FROM encrypted_subscriptions LIMIT 0")?;
+    db.prepare("SELECT account_id,generation FROM encrypted_subscription_generations LIMIT 0")?;
     Ok(())
 }
 
@@ -1232,12 +1284,32 @@ CREATE TRIGGER encrypted_connection_delete_guard BEFORE DELETE ON connections
 PRAGMA user_version=2;
 "#)?;
     }
-    tx.execute_batch(
-        "ALTER TABLE encrypted_subscriptions ADD COLUMN control_key TEXT;
+    if version < 3 {
+        tx.execute_batch(
+            "ALTER TABLE encrypted_subscriptions ADD COLUMN control_key TEXT;
          ALTER TABLE encrypted_subscriptions ADD COLUMN last_control_digest TEXT;
-         ALTER TABLE encrypted_subscriptions ADD COLUMN control_status_at INTEGER;
-         PRAGMA user_version=3;",
+         ALTER TABLE encrypted_subscriptions ADD COLUMN control_status_at INTEGER;",
+        )?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE encrypted_subscription_generations(
+         account_id TEXT PRIMARY KEY REFERENCES encrypted_subscriptions(account_id) ON DELETE CASCADE,
+         generation TEXT NOT NULL);",
     )?;
+    let accounts: Vec<String> = tx
+        .prepare("SELECT account_id FROM encrypted_subscriptions")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for account in accounts {
+        tx.execute(
+            "INSERT INTO encrypted_subscription_generations(account_id,generation) VALUES(?1,?2)",
+            params![account, token()?],
+        )?;
+    }
+    // Invalid historical schemas must roll back the whole migration, including
+    // the generation table and schema marker, instead of partially advancing.
+    verify_schema(&tx)?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
 }
@@ -1338,6 +1410,17 @@ mod tests {
         e.subscription.supported_event_versions = vec![1, 2];
         e
     }
+
+    fn private_generation(store: &PushStore) -> String {
+        store
+            .db
+            .query_row(
+                "SELECT generation FROM encrypted_subscription_generations WHERE account_id=?1",
+                [ACCOUNT],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
     fn connection(e: &Enrollment) -> crate::db::Connection {
         crate::db::Connection::new(
             e.account_id.clone(),
@@ -1436,7 +1519,8 @@ mod tests {
         store
             .db
             .execute_batch(
-                "ALTER TABLE encrypted_subscriptions DROP COLUMN control_key;
+                "DROP TABLE encrypted_subscription_generations;
+             ALTER TABLE encrypted_subscriptions DROP COLUMN control_key;
              ALTER TABLE encrypted_subscriptions DROP COLUMN last_control_digest;
              ALTER TABLE encrypted_subscriptions DROP COLUMN control_status_at;
              PRAGMA user_version=2;",
@@ -1452,7 +1536,7 @@ mod tests {
             Some(e.subscription.clone())
         );
         assert!(store
-            .control_context_for_connection(&connection(&e))
+            .control_context_for_connection(&connection(&e), &private_generation(&store))
             .unwrap()
             .is_none());
         assert_eq!(store.pending_count(None).unwrap(), 1);
@@ -1514,6 +1598,7 @@ mod tests {
         let mut store = dir.store();
         let e = keyed_enrollment();
         store.enroll(&e, NOW).unwrap();
+        let generation = private_generation(&store);
         let original = connection(&e);
         let key = e.control_key.as_ref().unwrap();
         store.enqueue(ACCOUNT, &event(&e, 11), NOW).unwrap();
@@ -1533,7 +1618,15 @@ mod tests {
         let first = confirmation(&updated, 12, NOW + 1);
         assert_eq!(
             store
-                .apply_endpoint_update(&original, key, &updated, &[3; 32], &first, NOW + 1)
+                .apply_endpoint_update(
+                    &original,
+                    &generation,
+                    key,
+                    &updated,
+                    &[3; 32],
+                    &first,
+                    NOW + 1
+                )
                 .unwrap(),
             ControlDisposition::Applied
         );
@@ -1546,13 +1639,13 @@ mod tests {
             Some(AccountState::Active)
         );
         assert!(store
-            .control_context_for_connection(&original)
+            .control_context_for_connection(&original, &generation)
             .unwrap()
             .is_none());
         let mut current = connection(&e);
         current.endpoint = updated.endpoint.clone();
         let context = store
-            .control_context_for_connection(&current)
+            .control_context_for_connection(&current, &generation)
             .unwrap()
             .unwrap();
         assert_eq!(context.control_key, *key);
@@ -1566,7 +1659,15 @@ mod tests {
         let retry = confirmation(&updated, 13, NOW + 40);
         assert_eq!(
             store
-                .apply_endpoint_update(&current, key, &updated, &[3; 32], &retry, NOW + 40)
+                .apply_endpoint_update(
+                    &current,
+                    &generation,
+                    key,
+                    &updated,
+                    &[3; 32],
+                    &retry,
+                    NOW + 40
+                )
                 .unwrap(),
             ControlDisposition::Unchanged
         );
@@ -1591,7 +1692,15 @@ mod tests {
         // Provider acceptance isn't phone receipt: an identical replay can
         // recover a lost confirmation, bounded to one every thirty seconds.
         store
-            .apply_endpoint_update(&current, key, &updated, &[3; 32], &retry, NOW + 40)
+            .apply_endpoint_update(
+                &current,
+                &generation,
+                key,
+                &updated,
+                &[3; 32],
+                &retry,
+                NOW + 40,
+            )
             .unwrap();
         assert_eq!(store.pending_count(None).unwrap(), 1);
         let status = store.claim_due(NOW + 40).unwrap().unwrap();
@@ -1601,12 +1710,28 @@ mod tests {
             .unwrap();
         let throttled = confirmation(&updated, 14, NOW + 42);
         store
-            .apply_endpoint_update(&current, key, &updated, &[3; 32], &throttled, NOW + 42)
+            .apply_endpoint_update(
+                &current,
+                &generation,
+                key,
+                &updated,
+                &[3; 32],
+                &throttled,
+                NOW + 42,
+            )
             .unwrap();
         assert_eq!(store.pending_count(None).unwrap(), 0);
         let later = confirmation(&updated, 15, NOW + 71);
         store
-            .apply_endpoint_update(&current, key, &updated, &[3; 32], &later, NOW + 71)
+            .apply_endpoint_update(
+                &current,
+                &generation,
+                key,
+                &updated,
+                &[3; 32],
+                &later,
+                NOW + 71,
+            )
             .unwrap();
         assert_eq!(store.pending_count(None).unwrap(), 1);
         // A late provider callback from before rotation cannot stale the new epoch.
@@ -1626,6 +1751,7 @@ mod tests {
             store
                 .apply_endpoint_update(
                     &current,
+                    &generation,
                     key,
                     &updated,
                     &[3; 32],
@@ -1655,6 +1781,7 @@ mod tests {
         let mut store = dir.store();
         let e = keyed_enrollment();
         store.enroll(&e, NOW).unwrap();
+        let generation = private_generation(&store);
         let co = connection(&e);
         let key = e.control_key.as_ref().unwrap();
         let mut next = e.subscription.clone();
@@ -1663,6 +1790,7 @@ mod tests {
         assert_eq!(
             store.apply_endpoint_update(
                 &co,
+                &generation,
                 &URL_SAFE_NO_PAD.encode([0u8; 32]),
                 &next,
                 &[4; 32],
@@ -1675,7 +1803,15 @@ mod tests {
         private.instance.push_str("-private-change");
         let invalid_status = confirmation(&private, 21, NOW);
         assert_eq!(
-            store.apply_endpoint_update(&co, key, &private, &[4; 32], &invalid_status, NOW),
+            store.apply_endpoint_update(
+                &co,
+                &generation,
+                key,
+                &private,
+                &[4; 32],
+                &invalid_status,
+                NOW
+            ),
             Err(StoreError::InvalidEnrollment)
         );
         assert_eq!(
@@ -1684,15 +1820,23 @@ mod tests {
         );
         assert_eq!(store.pending_count(None).unwrap(), 0);
         store
-            .apply_endpoint_update(&co, key, &next, &[4; 32], &status, NOW)
+            .apply_endpoint_update(&co, &generation, key, &next, &[4; 32], &status, NOW)
             .unwrap();
         assert_eq!(
-            store.apply_endpoint_update(&co, key, &next, &[5; 32], &status, NOW),
+            store.apply_endpoint_update(&co, &generation, key, &next, &[5; 32], &status, NOW),
             Err(StoreError::EpochConflict)
         );
         let old_status = confirmation(&e.subscription, 22, NOW);
         assert_eq!(
-            store.apply_endpoint_update(&co, key, &e.subscription, &[4; 32], &old_status, NOW),
+            store.apply_endpoint_update(
+                &co,
+                &generation,
+                key,
+                &e.subscription,
+                &[4; 32],
+                &old_status,
+                NOW
+            ),
             Err(StoreError::EpochConflict)
         );
         assert_eq!(store.pending_count(None).unwrap(), 1);
@@ -1704,17 +1848,19 @@ mod tests {
         imported.subscription.subscription_epoch = 3;
         imported.control_key = Some(URL_SAFE_NO_PAD.encode([24u8; 32]));
         store.enroll(&imported, NOW + 1).unwrap();
+        let generation = private_generation(&store);
         let mut fourth = imported.subscription.clone();
         fourth.subscription_epoch = 4;
         let status = confirmation(&fourth, 23, NOW + 1);
         assert_eq!(
-            store.apply_endpoint_update(&co, key, &fourth, &[6; 32], &status, NOW + 1),
+            store.apply_endpoint_update(&co, &generation, key, &fourth, &[6; 32], &status, NOW + 1),
             Err(StoreError::EpochConflict)
         );
         let imported_status = confirmation(&imported.subscription, 24, NOW + 1);
         assert_eq!(
             store.apply_endpoint_update(
                 &co,
+                &generation,
                 imported.control_key.as_ref().unwrap(),
                 &imported.subscription,
                 &[4; 32],
@@ -1726,12 +1872,13 @@ mod tests {
         let mut wrong = connection(&imported);
         wrong.password.push('x');
         assert!(store
-            .control_context_for_connection(&wrong)
+            .control_context_for_connection(&wrong, &generation)
             .unwrap()
             .is_none());
         assert_eq!(
             store.apply_endpoint_update(
                 &wrong,
+                &generation,
                 imported.control_key.as_ref().unwrap(),
                 &fourth,
                 &[6; 32],
@@ -1747,10 +1894,14 @@ mod tests {
                 [ACCOUNT],
             )
             .unwrap();
-        assert!(store.control_context_for_connection(&co).unwrap().is_none());
+        assert!(store
+            .control_context_for_connection(&co, &generation)
+            .unwrap()
+            .is_none());
         assert_eq!(
             store.apply_endpoint_update(
                 &co,
+                &generation,
                 imported.control_key.as_ref().unwrap(),
                 &fourth,
                 &[6; 32],
@@ -1772,6 +1923,7 @@ mod tests {
         let mut store = dir.store();
         let e = keyed_enrollment();
         store.enroll(&e, NOW).unwrap();
+        let generation = private_generation(&store);
         store.enqueue(ACCOUNT, &event(&e, 30), NOW).unwrap();
         let co = connection(&e);
         let mut next = e.subscription.clone();
@@ -1782,6 +1934,7 @@ mod tests {
         assert_eq!(
             store.apply_endpoint_update(
                 &co,
+                &generation,
                 e.control_key.as_ref().unwrap(),
                 &next,
                 &[7; 32],
@@ -1796,7 +1949,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .control_context_for_connection(&co)
+                .control_context_for_connection(&co, &generation)
                 .unwrap()
                 .unwrap()
                 .subscription,
@@ -1815,6 +1968,7 @@ mod tests {
             store
                 .apply_endpoint_update(
                     &co,
+                    &generation,
                     e.control_key.as_ref().unwrap(),
                     &next,
                     &[7; 32],
@@ -1852,6 +2006,7 @@ mod tests {
             assert!(store.receipt_for(&replacement).unwrap().is_none());
             replacement.control_key = Some(URL_SAFE_NO_PAD.encode([99u8; 32]));
             store.enroll(&replacement, NOW + 1).unwrap();
+            let generation = private_generation(&store);
             let mut prebuilt = replacement.subscription.clone();
             prebuilt.subscription_epoch = 100;
             prebuilt.endpoint.push_str("-old-lifecycle");
@@ -1859,6 +2014,7 @@ mod tests {
             assert_eq!(
                 store.apply_endpoint_update(
                     &connection(&replacement),
+                    &generation,
                     e.control_key.as_ref().unwrap(),
                     &prebuilt,
                     &[8; 32],
@@ -1893,9 +2049,10 @@ mod tests {
         );
         endpoint_rotation.control_key = Some(URL_SAFE_NO_PAD.encode([98u8; 32]));
         store.enroll(&endpoint_rotation, NOW + 1).unwrap();
+        let generation = private_generation(&store);
         assert_eq!(
             store
-                .control_context_for_connection(&connection(&endpoint_rotation))
+                .control_context_for_connection(&connection(&endpoint_rotation), &generation)
                 .unwrap()
                 .unwrap()
                 .control_key,
@@ -1927,6 +2084,7 @@ mod tests {
         // With a fresh key the import succeeds and the old frames are dead.
         c.control_key = Some(URL_SAFE_NO_PAD.encode([42u8; 32]));
         store.enroll(&c, NOW + 1).unwrap();
+        let generation = private_generation(&store);
         let co = connection(&c);
         for epoch in [2u64, 3] {
             let mut frame = c.subscription.clone();
@@ -1934,7 +2092,15 @@ mod tests {
             frame.endpoint = format!("https://push.example.test/frame-{epoch}");
             let status = confirmation(&frame, 60 + epoch, NOW + 2);
             assert!(store
-                .apply_endpoint_update(&co, &key, &frame, &[epoch as u8; 32], &status, NOW + 2)
+                .apply_endpoint_update(
+                    &co,
+                    &generation,
+                    &key,
+                    &frame,
+                    &[epoch as u8; 32],
+                    &status,
+                    NOW + 2
+                )
                 .is_err());
         }
         assert_eq!(
@@ -1942,6 +2108,399 @@ mod tests {
             Some(c.subscription)
         );
         assert_eq!(store.pending_count(None).unwrap(), 0);
+    }
+
+    fn durable_snapshot(store: &PushStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        [
+            "connections",
+            "encrypted_subscriptions",
+            "encrypted_enrollment_requests",
+            "encrypted_push_queue",
+            "encrypted_push_event_ids",
+            "encrypted_subscription_generations",
+        ]
+        .iter()
+        .map(|table| {
+            let mut statement = store
+                .db
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .unwrap();
+            let rows = statement
+                .query_map([], |row| {
+                    (0..row.as_ref().column_count())
+                        .map(|index| row.get(index))
+                        .collect::<rusqlite::Result<Vec<rusqlite::types::Value>>>()
+                })
+                .unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        })
+        .collect()
+    }
+
+    #[test]
+    fn schema_three_migration_preserves_control_receipts_queue_leases_and_v1_state() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let e = keyed_enrollment();
+        store.enroll(&e, NOW).unwrap();
+        let co = connection(&e);
+        let old_generation = private_generation(&store);
+        let mut updated = e.subscription.clone();
+        updated.subscription_epoch = 7;
+        let status = confirmation(&updated, 90, NOW);
+        store
+            .apply_endpoint_update(
+                &co,
+                &old_generation,
+                e.control_key.as_ref().unwrap(),
+                &updated,
+                &[9; 32],
+                &status,
+                NOW,
+            )
+            .unwrap();
+        let leased = store.claim_due(NOW).unwrap().unwrap();
+        assert_eq!(leased.attempt, 1);
+
+        let mut v1 = enrollment();
+        v1.account_id = id(900);
+        store.enroll(&v1, NOW).unwrap();
+        store.enqueue(&v1.account_id, &event(&v1, 91), NOW).unwrap();
+        let mut before = durable_snapshot(&store);
+        before.pop(); // Schema 3 has no generation table.
+        store
+            .db
+            .execute_batch("DROP TABLE encrypted_subscription_generations; PRAGMA user_version=3;")
+            .unwrap();
+        drop(store);
+
+        let store = dir.store();
+        let mut after = durable_snapshot(&store);
+        after.pop();
+        assert_eq!(after, before);
+        assert!(store.receipt_for(&e).unwrap().unwrap().replayed);
+        assert!(store.receipt_for(&v1).unwrap().unwrap().replayed);
+        let generation = private_generation(&store);
+        assert_ne!(generation, old_generation);
+        assert_ne!(
+            generation,
+            store
+                .private_generation_for_connection(&connection(&v1))
+                .unwrap()
+                .unwrap()
+        );
+        drop(store);
+        let store = dir.store();
+        assert_eq!(private_generation(&store), generation);
+    }
+
+    #[test]
+    fn incomplete_schema_three_migration_does_not_commit_a_generation_or_new_marker() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        store.enroll(&keyed_enrollment(), NOW).unwrap();
+        store.db.execute_batch("DROP TABLE encrypted_subscription_generations; DROP TRIGGER encrypted_connection_update_guard; PRAGMA user_version=3;").unwrap();
+        drop(store);
+        assert!(matches!(
+            PushStore::open(dir.path()),
+            Err(StoreError::StateUnavailable)
+        ));
+        let db = Connection::open(dir.path()).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+                .unwrap(),
+            3
+        );
+        assert_eq!(db.query_row("SELECT count(*) FROM sqlite_master WHERE name='encrypted_subscription_generations'", [], |r| r.get::<_, u32>(0)).unwrap(), 0);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM encrypted_subscriptions", [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn private_generations_revoke_same_tuple_callbacks_across_key_aba_and_recreation() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let original = keyed_enrollment();
+        store.enroll(&original, NOW).unwrap();
+        let co = connection(&original);
+        let mut revoked = vec![private_generation(&store)];
+        let mut current = original.clone();
+        let db = crate::db::MollySocketDb::open(dir.path()).unwrap();
+
+        // Include A -> B -> A, keyed -> keyless, and keyless -> keyed plus an
+        // instance change. None changes account/device/password/endpoint.
+        for (index, key) in [Some([24; 32]), Some([23; 32]), None, Some([25; 32])]
+            .into_iter()
+            .enumerate()
+        {
+            current = rotate(&current, index as u64 + 2);
+            current.control_key = key.map(|key| URL_SAFE_NO_PAD.encode(key));
+            current.subscription.supported_event_versions = if current.control_key.is_some() {
+                vec![1, 2]
+            } else {
+                vec![1]
+            };
+            if index == 3 {
+                current.subscription.instance.push_str("-replacement");
+            }
+            store.enroll(&current, NOW + 1).unwrap();
+            let generation = private_generation(&store);
+            assert!(!revoked.contains(&generation));
+            let wake = event(&current, 100 + index as u64);
+            let mut status = event(&current, 110 + index as u64);
+            status.kind = "status".into();
+            status.code = Some("connection_conflict".into());
+            let before = durable_snapshot(&store);
+            for old in &revoked {
+                assert!(store
+                    .control_context_for_connection(&co, old)
+                    .unwrap()
+                    .is_none());
+                assert!(store
+                    .subscription_for_connection(
+                        ACCOUNT,
+                        co.device_id,
+                        &co.password,
+                        &co.endpoint,
+                        old
+                    )
+                    .unwrap()
+                    .is_none());
+                assert!(!store
+                    .enqueue_for_connection(&co, old, &wake, NOW + 1)
+                    .unwrap());
+                assert!(!store
+                    .enqueue_for_connection(&co, old, &status, NOW + 1)
+                    .unwrap());
+                assert!(!db.forbid_if_current(&co, Some(old)).unwrap());
+                if let Some(key) = &current.control_key {
+                    let mut newer = current.subscription.clone();
+                    newer.subscription_epoch += 10;
+                    let confirmation = confirmation(&newer, 120 + index as u64, NOW + 1);
+                    assert_eq!(
+                        store.apply_endpoint_update(
+                            &co,
+                            old,
+                            key,
+                            &newer,
+                            &[10; 32],
+                            &confirmation,
+                            NOW + 1
+                        ),
+                        Err(StoreError::SubscriptionMissing)
+                    );
+                }
+            }
+            // A legacy-mode callback cannot forbid an encrypted replacement.
+            assert!(!db.forbid_if_current(&co, None).unwrap());
+            assert_eq!(durable_snapshot(&store), before);
+            assert!(store
+                .enqueue_for_connection(&co, &generation, &wake, NOW + 1)
+                .unwrap());
+            assert!(store.enroll(&current, NOW + 2).unwrap().replayed);
+            let mut unchanged = current.clone();
+            unchanged.request_id = id(1000 + index as u64);
+            assert_eq!(
+                store.enroll(&unchanged, NOW + 2).unwrap().disposition,
+                EnrollmentDisposition::Unchanged
+            );
+            assert_eq!(private_generation(&store), generation);
+            revoked.push(generation);
+        }
+
+        // Deleted state can be recreated with epoch 1 and identical credentials;
+        // its old callbacks still must not become current again.
+        assert!(store.remove(ACCOUNT).unwrap());
+        store.enroll(&original, NOW + 3).unwrap();
+        let recreated = private_generation(&store);
+        assert!(!revoked.contains(&recreated));
+        let before = durable_snapshot(&store);
+        for old in &revoked {
+            assert!(!store
+                .enqueue_for_connection(&co, old, &event(&original, 150), NOW + 3)
+                .unwrap());
+            assert!(!db.forbid_if_current(&co, Some(old)).unwrap());
+        }
+        assert_eq!(durable_snapshot(&store), before);
+        assert!(store
+            .enqueue_for_connection(&co, &recreated, &event(&original, 151), NOW + 3)
+            .unwrap());
+    }
+
+    #[test]
+    fn forbidden_transition_between_snapshot_and_enqueue_cannot_change_the_outbox() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let e = keyed_enrollment();
+        store.enroll(&e, NOW).unwrap();
+        let co = connection(&e);
+        let generation = private_generation(&store);
+        assert!(store
+            .subscription_for_connection(
+                ACCOUNT,
+                co.device_id,
+                &co.password,
+                &co.endpoint,
+                &generation
+            )
+            .unwrap()
+            .is_some());
+        let captured = event(&e, 160);
+        let db = crate::db::MollySocketDb::open(dir.path()).unwrap();
+        assert!(db.forbid_if_current(&co, Some(&generation)).unwrap());
+        let before = durable_snapshot(&store);
+        assert!(!store
+            .enqueue_for_connection(&co, &generation, &captured, NOW + 1)
+            .unwrap());
+        assert!(store
+            .subscription_for_connection(
+                ACCOUNT,
+                co.device_id,
+                &co.password,
+                &co.endpoint,
+                &generation
+            )
+            .unwrap()
+            .is_none());
+        assert!(store
+            .control_context_for_connection(&co, &generation)
+            .unwrap()
+            .is_none());
+        assert_eq!(durable_snapshot(&store), before);
+    }
+
+    #[test]
+    fn control_replay_preserves_a_leased_fourth_attempt_and_refreshes_only_after_its_end() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let e = keyed_enrollment();
+        store.enroll(&e, NOW).unwrap();
+        let co = connection(&e);
+        let generation = private_generation(&store);
+        let mut updated = e.subscription.clone();
+        updated.subscription_epoch = 8;
+        let first = confirmation(&updated, 170, NOW);
+        let key = e.control_key.as_ref().unwrap();
+        store
+            .apply_endpoint_update(&co, &generation, key, &updated, &[11; 32], &first, NOW)
+            .unwrap();
+        for (index, when) in [NOW, NOW + 5, NOW + 35, NOW + 155].into_iter().enumerate() {
+            let claim = store.claim_due(when).unwrap().unwrap();
+            assert_eq!(claim.attempt, index as u32 + 1);
+            if index != 3 {
+                store
+                    .complete(&claim, DeliveryOutcome::Retry { retry_after: None }, when)
+                    .unwrap();
+            }
+        }
+        let before = durable_snapshot(&store);
+        let replay = confirmation(&updated, 171, NOW + 156);
+        assert_eq!(
+            store
+                .apply_endpoint_update(
+                    &co,
+                    &generation,
+                    key,
+                    &updated,
+                    &[11; 32],
+                    &replay,
+                    NOW + 156
+                )
+                .unwrap(),
+            ControlDisposition::Unchanged
+        );
+        assert_eq!(durable_snapshot(&store), before);
+        drop(store);
+        let mut store = dir.store();
+        store
+            .apply_endpoint_update(
+                &co,
+                &generation,
+                key,
+                &updated,
+                &[11; 32],
+                &replay,
+                NOW + 170,
+            )
+            .unwrap();
+        assert_eq!(durable_snapshot(&store), before);
+
+        // The expired attempt is pruned without reusing its event or lease.
+        let fresh = confirmation(&updated, 172, NOW + 186);
+        store
+            .apply_endpoint_update(
+                &co,
+                &generation,
+                key,
+                &updated,
+                &[11; 32],
+                &fresh,
+                NOW + 186,
+            )
+            .unwrap();
+        let claim = store.claim_due(NOW + 186).unwrap().unwrap();
+        assert_eq!(claim.event, fresh);
+        assert_eq!(claim.attempt, 1);
+        assert_eq!(private_generation(&store), generation);
+        assert_eq!(store.get_subscription(ACCOUNT).unwrap(), Some(updated));
+    }
+
+    #[test]
+    fn full_confirmation_ledger_rolls_back_control_and_preserves_private_generation() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let e = keyed_enrollment();
+        store.enroll(&e, NOW).unwrap();
+        let co = connection(&e);
+        let generation = private_generation(&store);
+        store.enqueue(ACCOUNT, &event(&e, 180), NOW).unwrap();
+        store.db.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1) INSERT INTO encrypted_push_event_ids SELECT printf('capacity-%d',x),?2,'synthetic-digest',?3 FROM n", params![(MAX_EVENT_IDS - 1) as i64, ACCOUNT, NOW + 300]).unwrap();
+        let mut updated = e.subscription.clone();
+        updated.endpoint.push_str("-new");
+        updated.subscription_epoch = 12;
+        let status = confirmation(&updated, 181, NOW);
+        let before = durable_snapshot(&store);
+        assert_eq!(
+            store.apply_endpoint_update(
+                &co,
+                &generation,
+                e.control_key.as_ref().unwrap(),
+                &updated,
+                &[12; 32],
+                &status,
+                NOW
+            ),
+            Err(StoreError::QueueFull)
+        );
+        assert_eq!(durable_snapshot(&store), before);
+        store
+            .db
+            .execute(
+                "DELETE FROM encrypted_push_event_ids WHERE event_id='capacity-1'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .apply_endpoint_update(
+                    &co,
+                    &generation,
+                    e.control_key.as_ref().unwrap(),
+                    &updated,
+                    &[12; 32],
+                    &status,
+                    NOW
+                )
+                .unwrap(),
+            ControlDisposition::Applied
+        );
+        assert_eq!(private_generation(&store), generation);
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        assert_eq!(store.claim_due(NOW).unwrap().unwrap().event, status);
     }
 
     #[test]
@@ -2528,12 +3087,14 @@ mod tests {
         let mut e = enrollment();
         e.subscription.endpoint = "https://PUSH.example.test:443/synthetic".into();
         store.enroll(&e, NOW).unwrap();
+        let generation = private_generation(&store);
         assert!(store
             .subscription_for_connection(
                 ACCOUNT,
                 e.device_id,
                 &e.password,
-                &e.subscription.endpoint
+                &e.subscription.endpoint,
+                &generation,
             )
             .unwrap()
             .is_some());
@@ -2541,18 +3102,26 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(store
-            .subscription_for_connection(ACCOUNT, e.device_id, &e.password, &normalized)
+            .subscription_for_connection(
+                ACCOUNT,
+                e.device_id,
+                &e.password,
+                &normalized,
+                &generation
+            )
             .unwrap()
             .is_none());
         let mut second = rotate(&e, 2);
         second.password.push('x');
         store.enroll(&second, NOW + 1).unwrap();
+        let second_generation = private_generation(&store);
         assert!(store
             .subscription_for_connection(
                 ACCOUNT,
                 e.device_id,
                 &e.password,
-                &e.subscription.endpoint
+                &e.subscription.endpoint,
+                &generation,
             )
             .unwrap()
             .is_none());
@@ -2562,12 +3131,14 @@ mod tests {
                 second.device_id,
                 &second.password,
                 &second.subscription.endpoint,
+                &second_generation,
             )
             .unwrap()
             .unwrap();
         let mut third = rotate(&second, 3);
         third.password.push('y');
         store.enroll(&third, NOW + 2).unwrap();
+        let third_generation = private_generation(&store);
         let mut status = event(&second, 11);
         status.subscription_epoch = captured.subscription_epoch;
         status.kind = "status".into();
@@ -2580,13 +3151,27 @@ mod tests {
         let mut fourth = rotate(&third, 4);
         fourth.subscription.auth = URL_SAFE_NO_PAD.encode([9u8; 16]);
         store.enroll(&fourth, NOW + 3).unwrap();
+        // Even with unchanged Signal credentials and endpoint, the private
+        // replacement revokes the old socket's subscription snapshot.
+        assert!(store
+            .subscription_for_connection(
+                ACCOUNT,
+                third.device_id,
+                &third.password,
+                &third.subscription.endpoint,
+                &third_generation,
+            )
+            .unwrap()
+            .is_none());
+        let fourth_generation = private_generation(&store);
         assert_eq!(
             store
                 .subscription_for_connection(
                     ACCOUNT,
                     third.device_id,
                     &third.password,
-                    &third.subscription.endpoint
+                    &third.subscription.endpoint,
+                    &fourth_generation,
                 )
                 .unwrap()
                 .unwrap(),

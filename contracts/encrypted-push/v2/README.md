@@ -189,7 +189,26 @@ Sockets retain the same Signal account/device/password through an endpoint
 update. Subsequent wakes and status checks must use the newly committed
 subscription, including when the control frame and following message arrive on
 the same socket. A callback from an actually replaced private credential tuple
-must retain the existing protection against modifying its successor.
+must retain the existing protection against modifying its successor. The server
+also assigns a durable random generation to each encrypted enrollment and
+replaces it on every state-changing private import, including keyless imports.
+The connection manager binds this generation before opening a Signal socket and
+includes it in the socket's fingerprint. Control acceptance, ordinary wake and
+status enqueue, and Signal-authentication rejection must recheck that captured
+generation atomically with their effects. An obsolete socket cannot adopt a new
+generation by reading the replacement's key. This remains true when a later
+import restores an earlier key or credential tuple. Controls and idempotent
+imports retain the generation. It is private local state, not a wire field, and
+does not replace the requirement to generate fresh control keys.
+
+Database schema 4 adds this generation state without changing existing
+enrollments, import receipts, control replay receipts, queued events or leases.
+Migration from schema 3 is atomic and assigns one generation per existing
+encrypted enrollment. Before upgrading, stop the service and back up its private
+database. Older server binaries reject schema 4; rollback requires restoring the
+matching pre-upgrade database together with the older binary. Preserve the latest
+database for recovery: restoring a backup discards subsequent local enrollment
+and queue changes and may require private import to reconcile the phone's epoch.
 
 ## Confirmation event and phone state machine
 

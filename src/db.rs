@@ -124,10 +124,14 @@ impl MollySocketDb {
         Ok(())
     }
 
-    pub fn forbid_if_current(&self, co: &Connection) -> Result<bool> {
+    pub fn forbid_if_current(
+        &self,
+        co: &Connection,
+        expected_generation: Option<&str>,
+    ) -> Result<bool> {
         Ok(self.db.lock().unwrap().execute(
-            "UPDATE connections SET forbidden=1 WHERE uuid=?1 AND device_id=?2 AND password=?3 AND endpoint=?4 AND forbidden=0",
-            rusqlite::params![co.uuid,co.device_id,co.password,co.endpoint])?>0)
+            "UPDATE connections SET forbidden=1 WHERE uuid=?1 AND device_id=?2 AND password=?3 AND endpoint=?4 AND forbidden=0 AND (SELECT generation FROM encrypted_subscription_generations WHERE account_id=?1) IS ?5",
+            rusqlite::params![co.uuid,co.device_id,co.password,co.endpoint,expected_generation])?>0)
     }
 
     pub fn list(&self) -> Result<Vec<Connection>> {
@@ -209,9 +213,9 @@ mod tests {
             old.endpoint.clone(),
         );
         db.add(&new).unwrap();
-        assert!(!db.forbid_if_current(&old).unwrap());
+        assert!(!db.forbid_if_current(&old, None).unwrap());
         assert!(!db.get(&old.uuid).unwrap().forbidden);
-        assert!(db.forbid_if_current(&new).unwrap());
+        assert!(db.forbid_if_current(&new, None).unwrap());
         assert!(db.get(&new.uuid).unwrap().forbidden);
         drop(db);
         std::fs::remove_dir_all(directory).unwrap();
