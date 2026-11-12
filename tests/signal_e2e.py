@@ -300,8 +300,14 @@ class SignalHarness(Harness):
                 "v3 private import returned an unexpected receipt")
         require("key_id" not in receipt and "import_seq" not in receipt,
                 "v3 import receipt exposed internal key or sequence metadata")
-        require(self.queued() == 1 and self.current()["event_version"] == 3,
-                "v3 import did not activate a single v3 status event")
+        queued_events = self.rows(
+            "SELECT event_id FROM encrypted_push_queue WHERE account_id=?", (ACCOUNT,)
+        )
+        ledger_count = self.rows(
+            "SELECT count(*) FROM encrypted_push_event_ids WHERE account_id=?", (ACCOUNT,)
+        )[0][0]
+        require(len(queued_events) == 1 and self.current()["event_version"] == 3,
+                f"v3 import did not activate a single v3 status event (queued={len(queued_events)}, ledger={ledger_count})")
         credentials = f"{ACCOUNT}.{enrollment['device_id']}:{PASSWORD}"
 
         with FakeSignal(self.directory / "v3-signal-tls", credentials) as signal:
