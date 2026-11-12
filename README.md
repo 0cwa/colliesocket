@@ -58,7 +58,7 @@ continue to apply to every update and push attempt.
 The [v2 contract](contracts/encrypted-push/v2/README.md) specifies the exact wire
 format, phone behavior, replay rules and synthetic checks. It is additive to the
 frozen v1 contract. The [v2 operator guide](docs/encrypted-push-v2.md) covers
-schema-3 migration, control-key rotation, confirmation recovery and superseding
+database migration, control-key rotation, confirmation recovery and superseding
 an unconfirmed endpoint change.
 
 ## Repository boundaries

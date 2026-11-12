@@ -29,10 +29,19 @@ still apply to every update and subsequent push attempt.
    new binary first opens state. Follow the ownership, sidecar and backup steps
    in the [v1 migration procedure](encrypted-push-server-v1.md#migration-and-rollback).
 2. Run `mollysocket migrate` with the service account and its configuration.
-   Current v2 reports `{"schema_version":3}`. Migration preserves existing v1
-   subscriptions, queued events and private-import receipts. The schema-2 result
-   in the older v1 guide applies to that earlier binary.
-3. Export enrollment v2 from a compatible phone. A new enrollment starts at epoch
+   The original canonical v2 server from #11 reports `{"schema_version":3}`;
+   the schema-4 server follow-up in [PR #17](https://github.com/0cwa/colliesocket/pull/17)
+   reports `{"schema_version":4}`. Its migration from canonical schema 3 preserves
+   existing v1/v2 subscriptions, private-import and control replay receipts,
+   queued events and leases while adding an internal enrollment generation.
+
+   A schema-only upgrade from canonical schema 3 to 4 needs no new phone export
+   or private re-import. If retaining an existing enrollment, restart the service
+   after migration. Continue with steps 3–4 only when creating an enrollment or
+   enabling Signal control; the database upgrade does not activate control for a
+   v1 or keyless v2 enrollment.
+3. When creating an enrollment or enabling control, export enrollment v2 from a
+   compatible phone. A new enrollment starts at epoch
    1; enabling control on an existing enrollment requires a private import at the
    server's next epoch. A keyed v2 import uses `enrollment_version: 2`, a
    `control_key`, and `supported_event_versions: [1,2]`. The receipt selects event
@@ -51,12 +60,20 @@ control key. Only an idempotent import of unchanged active state may reuse the
 current key. Restoring or replacing phone state also requires fresh receiver
 keys, instance and control key through private enrollment before sending resumes.
 
+With schema 4, every state-changing private import also replaces the internal
+generation, including keyless imports. This revokes callbacks from older Signal
+sockets even when their password and endpoint are unchanged or later restored.
+Control updates, exact replays and idempotent private imports retain that
+generation. This local protection does not change the v2 wire format or replace
+the fresh-control-key requirement.
+
 Older binaries must use their matching pre-migration backup. Do not lower
 SQLite's `user_version` or remove columns to make an old binary open current
-state. The alternative proposal in [PR #15](https://github.com/0cwa/colliesocket/pull/15)
-also uses schema number 3 but defines a different database layout and wire
-protocol. It is not an interchangeable binary or a supported migration from
-current main.
+state. Preserve the latest database for recovery: restoring a backup discards
+subsequent local enrollment and queue changes. The alternative proposal in
+[PR #15](https://github.com/0cwa/colliesocket/pull/15) uses schema number 3 but has
+a different database layout and wire protocol from canonical #11. It is not an
+interchangeable binary or a supported source for the canonical schema-4 migration.
 
 ## Confirmation, retries and a second endpoint change
 
