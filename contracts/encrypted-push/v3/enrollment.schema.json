@@ -96,6 +96,9 @@
         },
         "supported_event_versions": {
           "type": "array",
+          "items": {
+            "type": "integer"
+          },
           "const": [
             1,
             2,

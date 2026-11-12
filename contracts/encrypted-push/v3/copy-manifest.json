@@ -4,15 +4,27 @@
   "files": [
     {
       "path": "README.md",
-      "sha256": "20b4ffd620dcb570ad77a9f1e36a4f559d121c40124901a3816e434864272a48"
+      "sha256": "ff113db8966c587839d501dcbea0288b043ecac5c0aff62f73ac3d2b053b6562"
     },
     {
       "path": "enrollment.schema.json",
-      "sha256": "9794ddf95f38f2474983552541c462109edbbfd891448ea62e17ad54f9969d88"
+      "sha256": "c0d4522be686565fcd2dd0fa0aa34649f8ab7a8452fddca2db1d28cc5d172dd8"
+    },
+    {
+      "path": "error.schema.json",
+      "sha256": "ba948dd98102b48dea3cc9698fafe2a64c314b817f5307672c849ec1dde9c482"
     },
     {
       "path": "event.schema.json",
       "sha256": "ea42adbec3a5ff77aed06f3a10729e37778874bd2325fed7958cd98771c38e72"
+    },
+    {
+      "path": "fixtures/enrollment-absent-account-b-epoch2-v3.json",
+      "sha256": "f9450fbf73981884a28a6108db7eea7707b909a1e24df44c792c1d63a5e742a5"
+    },
+    {
+      "path": "fixtures/enrollment-bool-event-version-v3.json",
+      "sha256": "eece5525a30c88bbcc05d284ea20772990b4a0d0fa2e82f224dc9d71b70aacf8"
     },
     {
       "path": "fixtures/enrollment-first-v3-adoption-v3.json",
@@ -23,12 +35,20 @@
       "sha256": "57a3d0cafc6cf81c1bf4df09f8783321e3cc5188585ca1b532dade1b4e9dd196"
     },
     {
+      "path": "fixtures/enrollment-independent-account-b-v3.json",
+      "sha256": "80c70ceded8bf1c1d31a455c702d7643588f2bd53853fc0cfd978507e16361a2"
+    },
+    {
       "path": "fixtures/enrollment-keyed-v3.json",
       "sha256": "c17de4ce8f9e6830bd3ca5f129da57a2d06a87707e55e30536ef1b5264282363"
     },
     {
       "path": "fixtures/enrollment-missing-import-seq-v3.json",
       "sha256": "d659c41451027531ab15f629ac8c1b18dd7f3d83744b9575da19c507e4edf6a7"
+    },
+    {
+      "path": "fixtures/error-capability-required.json",
+      "sha256": "240dd50887d70a96dfa44b9ac0132ab705842ebfde49a1ec43c4b6ddded00f85"
     },
     {
       "path": "fixtures/error-epoch-conflict.json",
@@ -43,12 +63,20 @@
       "sha256": "7e5a1c0b1508351449fbe76a4e25ce0e4140bd1d87b96c6cd5792164d2269b73"
     },
     {
+      "path": "fixtures/error-unsupported-version.json",
+      "sha256": "f5be5361c6c3ddc4efbf58459ff16e5226c856161529a8a2e3131fbd3c887c64"
+    },
+    {
       "path": "fixtures/event-enrollment-imported-v3.json",
       "sha256": "5279a8e9c095976ae55ff56c30a1a5ed971a79790ebb2f69f29684539539360a"
     },
     {
       "path": "fixtures/event-first-v3-adoption-v3.json",
       "sha256": "5b732e596e2c1bc937629e9a3095229c00c854853a2e9da044d8c278ba004655"
+    },
+    {
+      "path": "fixtures/event-independent-account-b-v3.json",
+      "sha256": "0c75bd8da7a90a6d93396391864c10e3d62c0c08fed381921596a04b4daf3343"
     },
     {
       "path": "fixtures/event-missing-import-id-v3.json",
@@ -72,11 +100,11 @@
     },
     {
       "path": "fixtures/first-v3-adoption-cases-v3.json",
-      "sha256": "2f2e3cfa5798c32a06b90c459e19e8f94909e542476e1763a1c1778e82aa1740"
+      "sha256": "bbe4a2e9607c276d6cde1d9def1373112f584bba4a43160ad370ee02c4dc0f89"
     },
     {
       "path": "fixtures/invalid-cases-v3.json",
-      "sha256": "c3a6ce80e4b2bbed0304c6f29069e1e3be131e3ab6c8a35f5188dcb7e4e35795"
+      "sha256": "25bc7253ff5c610cc20c4083fdbc66623a69e4edcc41d2fb3c6d4e96ddb34e0c"
     },
     {
       "path": "fixtures/key-id-v3.json",
@@ -95,6 +123,10 @@
       "sha256": "792d3f9b6d40a4a9cf2e79d5e2ea67df3c1667e6c52714c78dee757857a662c4"
     },
     {
+      "path": "fixtures/response-independent-account-b-v3.json",
+      "sha256": "e69a9b19812b544b0532ae5fa84b4b87f1d2fd61b4c5094008786d5ea934767a"
+    },
+    {
       "path": "fixtures/response-legacy-replay-v2.json",
       "sha256": "bd3b248d149b2216dcb54129723850d9c4cbb0ef90314dde20b6280734929cb4"
     },
@@ -108,7 +140,7 @@
     },
     {
       "path": "fixtures/runtime-cases-v3.json",
-      "sha256": "9d93924f6c1fe049b373410a9dc0b44f9717b08ab60c109206805774ca743502"
+      "sha256": "1675334a1048636bd356de466382edad894ff6a9571f4573283e7584c8b9c8be"
     },
     {
       "path": "fixtures/status-operator-v3.json",
@@ -120,7 +152,7 @@
     },
     {
       "path": "tools/conformance.py",
-      "sha256": "3f2adc480de9e2bb4fc0482b90a804dea5809f8d66b80b16d58d6b27f2abcaae"
+      "sha256": "69ed6e34b223e767ba0167cdde918bb9e97c83c0e0ea6e01e287dd0eb5e2afe0"
     },
     {
       "path": "tools/copy_manifest.py",

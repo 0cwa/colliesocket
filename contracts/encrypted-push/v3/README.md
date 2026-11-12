@@ -41,6 +41,22 @@ row values. Removing and reprovisioning the registration is the explicit
 lifecycle reset. V1/v2 events never promote a pending v3 key or invent an
 `import_id`.
 
+The incoming `account_id` selects the registration row before receipt,
+sequence, epoch, adoption, or key-freshness comparisons. Those comparisons are
+against that selected account only. The existing receipt table is account
+scoped: `encrypted_enrollment_requests` has primary key
+`(account_id, request_id)`, and receipt lookup filters on both columns. A
+`request_id` recorded for account A is unseen in account B unless B has its
+own matching receipt. With no B row, only epoch 1 can create B; a higher epoch
+returns `epoch_conflict` without changing either account or any receipt.
+
+The server does not impose cross-account control-key uniqueness. Trusted
+provisioning must generate a fresh control key for every new registration.
+Account-bound key identity and the existing control-frame authenticated data
+bind a key operation to its account/device context, but they do not make a
+reused secret cryptographically independent: compromise of a key shared by
+two accounts affects both.
+
 ## Ordered import intent
 
 `import_seq` is a positive signed-64-bit-compatible integer from 1 through
@@ -59,12 +75,17 @@ For a v3 row, the server applies these rules atomically:
 
 1. With no row, only epoch 1 can create the row; its accepted sequence becomes
    the initial floor.
-2. A previously recorded request ID with the same request digest is a replay.
-   It does not apply a new import. A request ID already recorded with a
-   different digest is rejected with fixed `idempotency_conflict` and no
-   mutation. A v3 replay is current only when epoch, key, full registration and
-   subscription context, `import_id`, `import_seq`, and durable generation
-   still match. A current replay changes none of those values.
+2. Receipt lookup is scoped to the selected `account_id` and `request_id`.
+   A previously recorded request in that scope with the same request digest
+   is a replay; it does not apply a new import. A request ID already recorded
+   in that scope with a different digest is rejected with fixed
+   `idempotency_conflict` and no mutation. A v3 replay is current only when
+   epoch, key, full registration and subscription context, `import_id`,
+   `import_seq`, and durable generation still match. A current replay changes
+   none of those values. An exact recorded request whose row is no longer
+   current returns its saved historical receipt with `replayed: true`; it
+   does not retry status delivery or confirm current state. An unseen stale
+   request is rejected and cannot bind backward.
 3. A sequence greater than the retained floor may import exactly the next
    subscription epoch. A state-changing next-epoch import follows the v2
    requirement to use a fresh control key.
@@ -148,10 +169,31 @@ exact next epoch and a fresh control key. A `stale` or `provider_rejected` row
 cannot use same-epoch adoption or reaffirmation: reject it with fixed
 `epoch_conflict` and no mutation, because its queued confirmation cannot be
 claimed. Recovery requires the exact-next-epoch import with a fresh control
-key, which returns the row to `active`. A request that changes account, device,
-password, endpoint, control key, `p256dh`, `auth`, instance, encryption
-requirement or capabilities is not an adoption. Supported event-version
-negotiation is the sole permitted subscription difference.
+key, which returns the row to `active`. For the selected legacy row, changing
+device, password, endpoint, control key, `p256dh`, `auth`, instance,
+encryption requirement or capabilities is not adoption. Supported
+event-version negotiation is the sole permitted subscription difference. A
+different `account_id` selects a different row and follows its own creation
+or transition rules.
+
+This same-account adoption rule does not constrain a different registration.
+For example, if legacy account A exists and B is absent, a valid B epoch-1
+request with an ID unseen in B creates B and leaves A unchanged. This remains
+true if a synthetic request reuses A's control-key bytes: the server has no
+cross-account key-uniqueness check. The client still generates a fresh key for
+B as normal provisioning hygiene. A request for absent B at epoch greater
+than 1 is rejected with `epoch_conflict`.
+
+Errors are one-field, value-redacted responses described by
+[`error.schema.json`](error.schema.json). Validation preserves the existing
+stable categories: malformed enrollment shape (including boolean values
+where integer version elements are required) is `invalid_enrollment`;
+unsupported event-version negotiation is `unsupported_version`; missing or
+changed capabilities are `capability_required`; stale or incompatible row
+state is `epoch_conflict`; and a recorded request ID with a different digest
+in the selected account is `idempotency_conflict`. Negotiation is checked
+before capabilities, so a request invalid in both fields returns
+`unsupported_version`.
 
 ## Key identity and events
 
@@ -196,6 +238,10 @@ instance, and noncanonical encodings. Receivers recompute the ID from each
 locally held candidate key and local account/device/instance context. Event
 authenticity still comes from encrypted-push delivery and the existing replay
 checks; the identifier alone proves neither authenticity nor phone receipt.
+The v3 `key_id` input includes the account UUID, and the existing control
+frame's authenticated data includes the account UUID and linked-device ID.
+These context bindings distinguish accounts; equal control-key bytes still
+share compromise risk.
 
 ## Phone intent and promotion rules
 
@@ -206,7 +252,9 @@ pending-intent slot. A new logical export allocates and durably commits a UUID
 and next sequence before publishing bytes. If a candidate already exists for
 that target, the API/UI requires an explicit mode; a second call must not guess
 whether it means re-render or new intent. The same epoch reuses its existing
-control key and `key_id`.
+control key and `key_id` only within the same account/device/instance
+registration context. A new account or device is a new registration and must
+get a fresh control key and intent.
 
 Compare the resulting export epoch (entered server epoch plus one) with
 remembered state. A lower or equal resulting epoch requires explicit recovery
@@ -232,7 +280,11 @@ up the persisted candidate by exact `import_id`, then verifies its recomputed
 or skip a same-key candidate because its `key_id` equals the active key. In
 first-v3 adoption the key and epoch intentionally remain the same; the matching
 `import_id` binds the new sequence and intent to the already-known key. A v2
-event cannot supply that missing identity.
+event cannot supply that missing identity. Before promotion, the receiver binds
+both active v3 state and candidate exports to its current local registration
+context: the live SignalStore ACI/device plus current instance. The event has
+no `account_id` wire field. Stored export context alone is insufficient after
+the active account or device changes.
 
 Retire lower sequences only after a higher sequence is confirmed, when the
 retained server row rejects those old files. If the server is later restored,
@@ -253,11 +305,12 @@ override that decreases the retained floor.
 
 ## Fixtures, manifests, and required implementation evidence
 
-The fixture set contains a keyed v3 enrollment, secret-free response, all-event
-examples, the full HMAC vector, invalid encoding/schema examples, and runtime
-transition cases for stale sequence, conflicting repeated ID, first-v3
-adoption, retained-floor legacy replay/rejection, ambiguous legacy migration,
-delayed old same-epoch intent, and lower-epoch recovery.
+The fixture set contains keyed v3 enrollments, an independent account-selection
+pair, secret-free responses, all-event examples, the full HMAC vector, invalid
+encoding/schema examples, and runtime transition cases for stale sequence,
+conflicting repeated ID, first-v3 adoption, retained-floor legacy
+replay/rejection, recorded and unseen old-file reimports, ambiguous legacy
+migration, delayed old same-epoch intent, and lower-epoch recovery.
 These fixtures define expected inputs and outcomes; they do not claim the
 current runtime passes the transition rules. `K1` and `K2` in the transition
 vectors are symbolic key labels, not wire-format `key_id` values.

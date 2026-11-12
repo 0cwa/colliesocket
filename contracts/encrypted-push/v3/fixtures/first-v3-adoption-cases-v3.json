@@ -144,22 +144,40 @@
         "wake",
         "test"
       ],
-      "expected_error": "invalid_enrollment",
+      "expected_error": "capability_required",
       "row_mutation": false,
       "queue_mutation": false,
       "receipt_ledger_mutation": false,
       "expected_response": {
-        "error": "invalid_enrollment"
+        "error": "capability_required"
       },
       "generation_mutation": false,
       "outbox_mutation": false
     },
     {
-      "id": "adoption-does-not-change-negotiation",
+      "id": "adoption-missing-v3-negotiation",
       "path": "subscription.supported_event_versions",
       "value": [
         1,
         2
+      ],
+      "expected_error": "unsupported_version",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "unsupported_version"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "adoption-negotiation-boolean-is-not-integer",
+      "path": "subscription.supported_event_versions",
+      "value": [
+        true,
+        2,
+        3
       ],
       "expected_error": "invalid_enrollment",
       "row_mutation": false,
@@ -167,20 +185,6 @@
       "receipt_ledger_mutation": false,
       "expected_response": {
         "error": "invalid_enrollment"
-      },
-      "generation_mutation": false,
-      "outbox_mutation": false
-    },
-    {
-      "id": "adoption-changes-account",
-      "path": "account_id",
-      "value": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-      "expected_error": "epoch_conflict",
-      "row_mutation": false,
-      "queue_mutation": false,
-      "receipt_ledger_mutation": false,
-      "expected_response": {
-        "error": "epoch_conflict"
       },
       "generation_mutation": false,
       "outbox_mutation": false
@@ -243,13 +247,30 @@
       "expected": "bind_candidate_sequence_and_intent"
     },
     {
-      "id": "account-context-mismatch-does-not-promote",
+      "id": "receiver-binds-to-current-live-context",
       "lookup_order": [
         "import_id",
         "key_id"
       ],
-      "candidate_account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      "event_account_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "event_contains_account_id": false,
+      "binding_source": "live_signal_store_aci_device_and_current_instance",
+      "current_live_registration_context": {
+        "account_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "device_id": 2,
+        "instance": "fixture-instance"
+      },
+      "active_v3_registration_context": {
+        "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "device_id": 2,
+        "instance": "fixture-instance"
+      },
+      "candidate_registration_context": {
+        "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "device_id": 2,
+        "instance": "fixture-instance"
+      },
+      "both_active_v3_and_candidates_checked": true,
+      "stored_export_context_sufficient": false,
       "expected": "no_promotion"
     }
   ],
@@ -622,5 +643,98 @@
     "response_fixture": "response-reaffirm-v3.json",
     "response_has_no_key_or_sequence": true,
     "generation_after": 5
-  }
+  },
+  "account_selection_cases": [
+    {
+      "id": "independent-account-b-epoch1-create",
+      "selected_account_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "request_id": "66666666-6666-4666-8666-666666666666",
+      "request_id_state_in_selected_account": "unseen",
+      "receipt_lookup_scope": [
+        "account_id",
+        "request_id"
+      ],
+      "selected_row_before": "absent",
+      "other_existing_account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "row_comparisons": "selected_account_only",
+      "server_cross_account_key_guard": false,
+      "same_control_key_bytes_as_a": true,
+      "client_requires_fresh_control_key_for_new_registration": true,
+      "enrollment_fixture": "enrollment-independent-account-b-v3.json",
+      "expected": "create_b",
+      "expected_response_fixture": "response-independent-account-b-v3.json",
+      "expected_event_fixture": "event-independent-account-b-v3.json",
+      "legacy_a_unchanged": true,
+      "new_b_active_and_claimable": true,
+      "new_b_enrollment_imported_queued_atomically": true,
+      "key_id_is_account_context_bound": true,
+      "shared_secret_compromise_couples_accounts": true,
+      "existing_account_a": {
+        "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "source_fixture": "contracts/encrypted-push/v2/fixtures/enrollment-keyed.json",
+        "state": "active",
+        "subscription_epoch": 1,
+        "import_seq": null
+      },
+      "server_oracle_probe_reuses_key_for_boundary_only": true
+    },
+    {
+      "id": "absent-account-b-epoch-above-one-rejected",
+      "selected_account_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "request_id": "77777777-7777-4777-8777-777777777777",
+      "request_id_state_in_selected_account": "unseen",
+      "receipt_lookup_scope": [
+        "account_id",
+        "request_id"
+      ],
+      "selected_row_before": "absent",
+      "other_existing_account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "row_comparisons": "selected_account_only",
+      "server_cross_account_key_guard": false,
+      "enrollment_fixture": "enrollment-absent-account-b-epoch2-v3.json",
+      "expected": "reject",
+      "expected_error": "epoch_conflict",
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "legacy_a_unchanged": true,
+      "row_mutation": false,
+      "generation_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "existing_account_a": {
+        "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "source_fixture": "contracts/encrypted-push/v2/fixtures/enrollment-keyed.json",
+        "state": "active",
+        "subscription_epoch": 1,
+        "import_seq": null
+      },
+      "expected_error_fixture": "error-epoch-conflict.json"
+    }
+  ],
+  "validation_precedence_cases": [
+    {
+      "id": "unsupported-version-precedes-capability-validation",
+      "supported_event_versions": [
+        1,
+        2
+      ],
+      "capabilities": [
+        "wake",
+        "test"
+      ],
+      "validation_order": [
+        "supported_event_versions",
+        "capabilities"
+      ],
+      "expected_error": "unsupported_version",
+      "expected_response": {
+        "error": "unsupported_version"
+      },
+      "row_mutation": false,
+      "generation_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false
+    }
+  ]
 }
