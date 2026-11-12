@@ -1,0 +1,12 @@
+{
+  "synthetic_only": true,
+  "algorithm": "HMAC-SHA-256",
+  "key_input": "control_key",
+  "control_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "device_id": 2,
+  "instance": "fixture-instance",
+  "message_hex": "434f4c4c4945534f434b45542d4556454e542d4b45592d49440003aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa000000020010666978747572652d696e7374616e6365",
+  "digest_hex": "997c345c35894a2f95233bf2a48d3e8d5376ae02567885f81ba37ad179c2bd63",
+  "key_id": "mXw0XDWJSi-VIzvypI0-jVN2rgJWeIX4G6N60XnCvWM"
+}

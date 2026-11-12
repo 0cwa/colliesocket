@@ -1,0 +1,12 @@
+{
+  "version": 3,
+  "instance": "fixture-instance",
+  "subscription_epoch": 1,
+  "issued_at": 1800000000,
+  "expires_at": 1800000300,
+  "key_id": "mXw0XDWJSi-VIzvypI0-jVN2rgJWeIX4G6N60XnCvWM",
+  "event_id": "55555555-5555-4555-8555-555555555555",
+  "kind": "status",
+  "code": "subscription_updated",
+  "import_id": "22222222-2222-4222-8222-222222222222"
+}
