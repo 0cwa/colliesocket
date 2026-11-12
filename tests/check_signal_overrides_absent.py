@@ -16,6 +16,7 @@ import tempfile
 
 
 def check_binary(binary):
+    """Return the binary digest and checks proving test settings have no effect."""
     executable = binary.read_bytes()
     markers = (
         b"test_signal_url", b"test_signal_ca", b"invalid_test_signal_configuration",
@@ -58,6 +59,7 @@ def check_binary(binary):
 
 
 def main():
+    """Check the requested executable and emit a redacted JSON result."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--output", type=Path, help="optional redacted JSON result path")
