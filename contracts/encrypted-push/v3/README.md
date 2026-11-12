@@ -31,10 +31,15 @@ destination and redirect checks, key validation, and secret redaction.
 Existing v1/v2 behavior is unchanged for rows that have no retained v3 sequence
 floor. Once a row has a v3 floor, a state-changing v1/v2 import for that row is
 rejected; v1/v2 cannot express a sequence value or new import identity and MUST
-NOT reset the v3 floor. An exact replay of a previously recorded v1/v2 request
-may return its existing receipt without changing the row or floor. Removing and
-reprovisioning the registration is the explicit lifecycle reset. V1/v2 events
-never promote a pending v3 key or reset a v3 intent based on epoch alone.
+NOT reset the v3 floor. The only no-mutation legacy operation allowed after a
+v3 floor exists is an exact replay of an already-recorded v1/v2 request with
+the same `request_id` and request digest. It returns the saved receipt and
+changes no row, floor, generation, queue, or receipt record. A fresh legacy
+request is rejected with the fixed `epoch_conflict` error even if its
+subscription appears state-identical. The error contains no sequence, key, or
+row values. Removing and reprovisioning the registration is the explicit
+lifecycle reset. V1/v2 events never promote a pending v3 key or invent an
+`import_id`.
 
 ## Ordered import intent
 
@@ -54,31 +59,99 @@ For a v3 row, the server applies these rules atomically:
 
 1. With no row, only epoch 1 can create the row; its accepted sequence becomes
    the initial floor.
-2. An exact replay of the current row, including request ID, sequence, key,
-   credentials, subscription and negotiation, is idempotent. An exact replay
-   of any previously recorded request may return its stored receipt without
-   changing the row. A request ID already recorded with different parameters
-   is rejected.
+2. A previously recorded request ID with the same request digest is a replay.
+   It does not apply a new import. A request ID already recorded with a
+   different digest is rejected with fixed `idempotency_conflict` and no
+   mutation. A v3 replay is current only when epoch, key, full registration and
+   subscription context, `import_id`, `import_seq`, and durable generation
+   still match. A current replay changes none of those values.
 3. A sequence greater than the retained floor may import exactly the next
    subscription epoch. A state-changing next-epoch import follows the v2
    requirement to use a fresh control key.
-4. A greater sequence may also reaffirm the current epoch only when the key and
-   all subscription and registration context are identical and the request ID
-   is fresh. This changes intent metadata only: rotate the durable generation,
-   invalidate queued work from older generations, and atomically queue a new
-   `status/enrollment_imported` event for the new `import_id`.
+4. A greater sequence may also reaffirm the current epoch only when the row is
+   active, the key and all subscription and registration context are identical,
+   and the request ID is fresh. This changes intent metadata only: rotate the
+   durable generation, invalidate queued work from older generations, and
+   atomically queue a new `status/enrollment_imported` event for the new
+   `import_id`.
 5. Same-epoch reaffirmation with a different key is rejected. A repeated
    `request_id` with conflicting parameters is rejected. Lower or equal
    sequence with any non-identical state is rejected without mutation.
 
 The active sequence is a floor, not an inference from UUID ordering. An unseen
-old request ID cannot rebind a row when its sequence is stale; an exact replay
-of an old recorded request returns its old receipt without rebinding the row.
-A later import must use a sequence above the retained floor. Queue or persistence failure
-leaves the prior row, intent and queued work unchanged and returns no accepted
-receipt. Status enqueue and generation update commit in the same transaction;
-no provider request is needed before commit. A provider 2xx means the provider
+old request ID cannot rebind a row when its sequence is stale. Any rejected
+adoption, downgrade, conflicting-ID, or stale-sequence request changes nothing:
+not the row, floor, generation, queue, or receipt ledger. A later import must
+use a sequence above the retained floor. Queue or persistence failure during a
+new import leaves prior state unchanged and returns no accepted receipt.
+Status enqueue and generation update commit in the same transaction; no
+provider request is needed before commit. A provider 2xx means the provider
 accepted the message, not that a device received it.
+
+V3 receipts include a boolean `replayed`. A newly applied request returns
+`status: "accepted", replayed: false`. An exact replay returns
+`status: "unchanged", replayed: true` only when epoch, key, full context,
+`import_id`, `import_seq`, and durable generation still match the current row.
+A previously recorded request whose row is no longer current returns its saved
+request ID, epoch, and original status with `replayed: true`; this historical
+receipt does not assert that the intent is current or active. The response
+schema permits `accepted/replayed: true` for that historical case and requires
+`unchanged/replayed: true` for exact current idempotence. Neither form confirms
+registration state: only a matching v3 event with persisted `import_id` and
+`key_id` can confirm an intent. V1/v2 receipts remain byte-for-byte as defined
+by their frozen schemas and keep their prior cached-receipt replay behavior; a
+historical v1/v2 receipt is not current registration confirmation.
+
+For an exact current v3 replay, outbox recovery is allowed only while the row
+is `active` and claimable. If an unexpired claimable
+`status/enrollment_imported` for the current epoch and `import_id` is already
+queued, retain that one item and do not add a duplicate. Otherwise, enqueue at
+most one replacement event for that intent when at least 30 seconds have
+elapsed since its last status enqueue (`CONTROL_STATUS_RETRY_SECONDS`). Before
+then, do not enqueue. This coalescing or retry may change outbox state only; it
+does not change row identity, key, epoch, `import_id`, `import_seq`, durable
+generation, or receipt bookkeeping. Every queued item must remain claimable;
+never accept an import whose confirmation cannot be claimed. If queue capacity
+prevents a retry, return fixed `queue_full` without a partial mutation. If the
+row is inactive, do not queue a status retry and do not reactivate the row. A
+previously saved receipt may still be returned with `replayed: true`, but it
+does not claim current liveness.
+
+### First v3 adoption of a legacy keyed row
+
+A pre-v3 row has `import_seq = NULL` and no v3 `import_id`. If it already has a
+control key and `encrypted_subscriptions.state = 'active'`, it may adopt v3 at
+the same epoch only when `control_key`, account,
+device, password, endpoint, `p256dh`, `auth`, instance, encryption requirement,
+and capabilities are unchanged. The only subscription difference is the exact
+negotiation change from `[1,2]` to `[1,2,3]`. The v3 request must supply a fresh
+UUIDv4 `request_id` and a valid positive `import_seq`; the server records that
+sequence as the initial floor and the request ID as the new `import_id`.
+
+Adoption rotates the durable generation, invalidates old queued work, and
+atomically queues `status/enrollment_imported` for the same epoch, existing
+control key and new import ID. Its receipt is `accepted/replayed: false`,
+echoes the new request ID and epoch, and contains no sequence or key identity.
+Exact request replay keeps epoch, key/context, import ID, sequence and
+generation unchanged and returns `unchanged/replayed: true`. It may use the
+active-row outbox retry rule above. Reuse of the request ID with different
+parameters returns the fixed one-field error
+`{"error":"idempotency_conflict"}` without changing row, queue, generation or
+receipt bookkeeping. Rejected adoption and downgrade requests return their
+fixed generic error (for example, `{"error":"epoch_conflict"}`) and mutate
+nothing, including the receipt ledger.
+
+A legacy unkeyed row cannot use same-epoch adoption because it has no existing
+control key to match. It must use the normal exact-next-epoch import with a new
+control key. Any other changed state on a legacy keyed row also requires the
+exact next epoch and a fresh control key. A `stale` or `provider_rejected` row
+cannot use same-epoch adoption or reaffirmation: reject it with fixed
+`epoch_conflict` and no mutation, because its queued confirmation cannot be
+claimed. Recovery requires the exact-next-epoch import with a fresh control
+key, which returns the row to `active`. A request that changes account, device,
+password, endpoint, control key, `p256dh`, `auth`, instance, encryption
+requirement or capabilities is not an adoption. Supported event-version
+negotiation is the sole permitted subscription difference.
 
 ## Key identity and events
 
@@ -153,6 +226,14 @@ superseded ID never promotes. A later wake or status event can recover a lost
 event proves handling of that intent only; it does not prove perpetual server
 liveness or rule out a later restore. Do not use elapsed time as proof.
 
+When deciding whether an event completes pending work, the phone first looks
+up the persisted candidate by exact `import_id`, then verifies its recomputed
+`key_id`, epoch and sequence. It MUST NOT choose a candidate by `key_id` alone
+or skip a same-key candidate because its `key_id` equals the active key. In
+first-v3 adoption the key and epoch intentionally remain the same; the matching
+`import_id` binds the new sequence and intent to the already-known key. A v2
+event cannot supply that missing identity.
+
 Retire lower sequences only after a higher sequence is confirmed, when the
 retained server row rejects those old files. If the server is later restored,
 the phone needs a fresh recovery export. V1/v2 events cannot promote a key,
@@ -174,16 +255,24 @@ override that decreases the retained floor.
 
 The fixture set contains a keyed v3 enrollment, secret-free response, all-event
 examples, the full HMAC vector, invalid encoding/schema examples, and runtime
-transition cases for stale sequence, conflicting repeated ID, ambiguous
-legacy migration, delayed old same-epoch intent, and lower-epoch recovery.
+transition cases for stale sequence, conflicting repeated ID, first-v3
+adoption, retained-floor legacy replay/rejection, ambiguous legacy migration,
+delayed old same-epoch intent, and lower-epoch recovery.
 These fixtures define expected inputs and outcomes; they do not claim the
 current runtime passes the transition rules. `K1` and `K2` in the transition
 vectors are symbolic key labels, not wire-format `key_id` values.
 
 `copy-manifest.json` in each v2/v3 directory hashes the exact contract source
-and fixture bytes. The manifest excludes itself; the full commit pin is kept
-separately by consumers. V1 remains untouched and retains its existing frozen
-manifest.
+and fixture bytes. `tools/copy_manifest.py` generates both manifests in sorted
+path order and excludes the manifest itself, bytecode, cache directories, and
+temporary files. The full commit pin is kept separately by consumers. V1
+remains untouched and retains its existing frozen manifest.
+
+Regenerate from the repository root with:
+
+```sh
+python3 contracts/encrypted-push/v3/tools/copy_manifest.py
+```
 
 Run:
 

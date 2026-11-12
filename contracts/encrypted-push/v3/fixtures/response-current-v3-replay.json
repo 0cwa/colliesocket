@@ -1,0 +1,14 @@
+{
+  "enrollment_version": 3,
+  "request_id": "33333333-3333-4333-8333-333333333333",
+  "instance": "fixture-instance",
+  "subscription_epoch": 1,
+  "selected_event_version": 3,
+  "capabilities": [
+    "wake",
+    "test",
+    "status"
+  ],
+  "status": "unchanged",
+  "replayed": true
+}
