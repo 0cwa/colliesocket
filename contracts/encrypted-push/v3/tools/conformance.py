@@ -78,9 +78,9 @@ def derive(control_key, account_id, device_id, instance):
     return message, digest, encoded(digest)
 
 
-def exact_keys(value, expected, label):
+def exact_keys(value, expected, label, error_code=None):
     if not isinstance(value, dict) or set(value) != set(expected):
-        raise ValueError(f"invalid_{label}_members")
+        raise ValueError(error_code or f"invalid_{label}_members")
 
 
 def exact_v3_negotiation(versions):
@@ -96,7 +96,7 @@ def validate_enrollment(value):
     exact_keys(value, {
         "enrollment_version", "request_id", "import_seq", "account_id", "device_id",
         "password", "control_key", "subscription",
-    }, "enrollment")
+    }, "enrollment", "invalid_enrollment")
     if type(value["enrollment_version"]) is not int or value["enrollment_version"] != 3:
         raise ValueError("invalid_enrollment_version")
     if not UUID4.fullmatch(value["request_id"]) or not UUID.fullmatch(value["account_id"]):
@@ -114,7 +114,7 @@ def validate_enrollment(value):
     exact_keys(sub, {
         "endpoint", "p256dh", "auth", "instance", "subscription_epoch",
         "encryption_required", "supported_event_versions", "capabilities",
-    }, "subscription")
+    }, "subscription", "invalid_enrollment")
     if (not isinstance(sub["endpoint"], str) or not 1 <= len(sub["endpoint"]) <= 2048
             or not all(0x21 <= ord(char) <= 0x7e for char in sub["endpoint"])):
         raise ValueError("invalid_endpoint_shape")
@@ -134,7 +134,12 @@ def validate_enrollment(value):
         raise ValueError("invalid_enrollment")
     if not exact_v3_negotiation(versions):
         raise ValueError("unsupported_version")
-    if sub["capabilities"] != ["wake", "test", "status"]:
+    capabilities = sub["capabilities"]
+    if type(capabilities) is not list or any(
+        type(capability) is not str for capability in capabilities
+    ):
+        raise ValueError("invalid_enrollment")
+    if capabilities != ["wake", "test", "status"]:
         raise ValueError("capability_required")
     return value
 
@@ -263,7 +268,9 @@ def check_schema_shapes():
     assert enrollment["properties"]["import_seq"]["minimum"] == 1
     assert enrollment["properties"]["import_seq"]["maximum"] == 9223372036854775807
     assert enrollment["properties"]["enrollment_version"]["const"] == 3
-    versions_schema = enrollment["properties"]["subscription"]["properties"]["supported_event_versions"]
+    subscription_schema = enrollment["properties"]["subscription"]
+    assert "capabilities" in subscription_schema["required"]
+    versions_schema = subscription_schema["properties"]["supported_event_versions"]
     assert versions_schema["const"] == [1, 2, 3]
     assert versions_schema["items"]["type"] == "integer"
     assert response["additionalProperties"] is False
@@ -310,6 +317,7 @@ def check_schema_instances():
             "enrollment-first-v3-adoption-v3.json",
             "enrollment-independent-account-b-v3.json",
             "enrollment-absent-account-b-epoch2-v3.json",
+            "enrollment-historical-request-v3.json",
         ],
         "response": [
             "response-v3.json",
@@ -778,6 +786,10 @@ def main():
     must_reject(lambda: validate_response(bad_response), "operator receipt key id")
 
     invalid_cases = read_json(ROOT / "fixtures/invalid-cases-v3.json")
+    assert {case["id"] for case in invalid_cases["public_error_cases"]} == {
+        "missing-capabilities-valid-negotiation-is-invalid-enrollment",
+        "missing-capabilities-unsupported-negotiation-is-invalid-enrollment",
+    }
     for case in invalid_cases["schema_invalid"]:
         value = read_json(ROOT / "fixtures" / case["fixture"])
         validator = {
@@ -785,6 +797,12 @@ def main():
             "event": validate_event,
         }[case["schema"]]
         must_reject(lambda v=value, fn=validator: fn(v), case["id"])
+    for case in invalid_cases["public_error_cases"]:
+        value = read_json(ROOT / "fixtures" / case["fixture"])
+        must_reject_with(
+            lambda v=value: validate_enrollment(v),
+            case["id"], case["expected_error"],
+        )
     runtime_cases = read_json(ROOT / "fixtures/runtime-cases-v3.json")["cases"]
     required_runtime_cases = {
         "stale-sequence-unseen-request-id", "equal-sequence-nonidentical",
@@ -812,10 +830,32 @@ def main():
         if case["id"] == "old-file-recorded-reimport-after-newer-same-epoch":
             assert case["receipt_state"] == "recorded_exact"
             assert case["expected"] == "saved_historical_receipt"
+            recorded_request = validate_enrollment(
+                read_json(ROOT / "fixtures" / case["recorded_request_fixture"])
+            )
+            incoming = case["incoming"]
+            assert case["selected_account_id"] == recorded_request["account_id"]
+            assert incoming["account_id"] == recorded_request["account_id"]
+            assert incoming["device_id"] == recorded_request["device_id"]
+            assert recorded_request["request_id"] == incoming["request_id"]
+            assert recorded_request["request_id"] == incoming["import_id"]
+            assert recorded_request["import_seq"] == incoming["import_seq"]
+            assert recorded_request["subscription"]["subscription_epoch"] == incoming["epoch"]
+            assert recorded_request["subscription"]["instance"] == incoming["instance"]
+            recorded_key_id = derive(
+                recorded_request["control_key"], recorded_request["account_id"],
+                recorded_request["device_id"], recorded_request["subscription"]["instance"],
+            )[2]
+            assert incoming["key_id"] == recorded_key_id
+            assert case["retained"]["key_id"] == recorded_key_id
             historical = validate_response(
                 read_json(ROOT / "fixtures" / case["expected_response_fixture"])
             )
-            assert historical["request_id"] == case["incoming"]["request_id"]
+            assert historical["request_id"] == incoming["request_id"]
+            assert historical["subscription_epoch"] == recorded_request["subscription"][
+                "subscription_epoch"
+            ]
+            assert historical["instance"] == recorded_request["subscription"]["instance"]
             assert historical["status"] == "accepted" and historical["replayed"] is True
             assert case["replayed"] is True
             assert case["request_digest_match"] is True

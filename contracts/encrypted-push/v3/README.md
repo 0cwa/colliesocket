@@ -187,13 +187,18 @@ than 1 is rejected with `epoch_conflict`.
 Errors are one-field, value-redacted responses described by
 [`error.schema.json`](error.schema.json). Validation preserves the existing
 stable categories: malformed enrollment shape (including boolean values
-where integer version elements are required) is `invalid_enrollment`;
-unsupported event-version negotiation is `unsupported_version`; missing or
-changed capabilities are `capability_required`; stale or incompatible row
-state is `epoch_conflict`; and a recorded request ID with a different digest
-in the selected account is `idempotency_conflict`. Negotiation is checked
-before capabilities, so a request invalid in both fields returns
-`unsupported_version`.
+where integer version elements are required, or a missing required
+`capabilities` member) is `invalid_enrollment`; unsupported event-version
+negotiation is `unsupported_version`; a present but different capabilities
+array is `capability_required`; stale or incompatible row state is
+`epoch_conflict`; and a recorded request ID with a different digest in the
+selected account is `idempotency_conflict`. Required fields must first
+deserialize successfully. After the encryption-required check, supported event
+versions are checked before the present capabilities array value. Thus
+unsupported negotiation plus changed capabilities returns
+`unsupported_version`. A missing required field fails typed decoding as
+`invalid_enrollment`, including when the version list would also be
+unsupported.
 
 ## Key identity and events
 

@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "README.md",
-      "sha256": "ff113db8966c587839d501dcbea0288b043ecac5c0aff62f73ac3d2b053b6562"
+      "sha256": "f3483b447adbf8abd520b3e1bf3b094f97cb303c1bb2ca299598a1f90786db74"
     },
     {
       "path": "enrollment.schema.json",
@@ -31,6 +31,10 @@
       "sha256": "877735ec376f688d9ad4dada2acec800b88a325d0fe4d351a96cfc0b5bf6701d"
     },
     {
+      "path": "fixtures/enrollment-historical-request-v3.json",
+      "sha256": "844b025e1f4ba0c0bb2687cbb78d2624a1b4aa73eb52c581c2ed9a7839053711"
+    },
+    {
       "path": "fixtures/enrollment-import-seq-zero-v3.json",
       "sha256": "57a3d0cafc6cf81c1bf4df09f8783321e3cc5188585ca1b532dade1b4e9dd196"
     },
@@ -41,6 +45,14 @@
     {
       "path": "fixtures/enrollment-keyed-v3.json",
       "sha256": "c17de4ce8f9e6830bd3ca5f129da57a2d06a87707e55e30536ef1b5264282363"
+    },
+    {
+      "path": "fixtures/enrollment-missing-capabilities-unsupported-version-v3.json",
+      "sha256": "604f3dff83c7c6e6384c3aa9fe868544af415141f925c731b97628443cf003b0"
+    },
+    {
+      "path": "fixtures/enrollment-missing-capabilities-v3.json",
+      "sha256": "7276c158aa41dfeafada2f407b1d02d718853ccca6d6591662a79891dd9262f7"
     },
     {
       "path": "fixtures/enrollment-missing-import-seq-v3.json",
@@ -104,7 +116,7 @@
     },
     {
       "path": "fixtures/invalid-cases-v3.json",
-      "sha256": "25bc7253ff5c610cc20c4083fdbc66623a69e4edcc41d2fb3c6d4e96ddb34e0c"
+      "sha256": "4031d3ed7326d0098032e900401d9c35d7d23046e9f1a45bfd5afb67f66e1278"
     },
     {
       "path": "fixtures/key-id-v3.json",
@@ -120,7 +132,7 @@
     },
     {
       "path": "fixtures/response-historical-v3-replay.json",
-      "sha256": "792d3f9b6d40a4a9cf2e79d5e2ea67df3c1667e6c52714c78dee757857a662c4"
+      "sha256": "3362a60c131a199d98d37a8c08f39c00e79ac29b20093ac492457e2a746d97c6"
     },
     {
       "path": "fixtures/response-independent-account-b-v3.json",
@@ -140,7 +152,7 @@
     },
     {
       "path": "fixtures/runtime-cases-v3.json",
-      "sha256": "1675334a1048636bd356de466382edad894ff6a9571f4573283e7584c8b9c8be"
+      "sha256": "028aebdf17bff275091fa7e9b5fdcdc38660876afc6f133d75604e9873b80b77"
     },
     {
       "path": "fixtures/status-operator-v3.json",
@@ -152,7 +164,7 @@
     },
     {
       "path": "tools/conformance.py",
-      "sha256": "69ed6e34b223e767ba0167cdde918bb9e97c83c0e0ea6e01e287dd0eb5e2afe0"
+      "sha256": "b79f5ac8e444ac47e0e274b473500ee146565f9634ec8497b52916d75b5fd30f"
     },
     {
       "path": "tools/copy_manifest.py",
