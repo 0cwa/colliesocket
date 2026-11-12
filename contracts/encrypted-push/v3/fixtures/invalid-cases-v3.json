@@ -24,6 +24,28 @@
       "id": "v3-enrollment-rejects-boolean-event-version-element",
       "schema": "enrollment",
       "fixture": "enrollment-bool-event-version-v3.json"
+    },
+    {
+      "id": "v3-enrollment-requires-capabilities-member",
+      "schema": "enrollment",
+      "fixture": "enrollment-missing-capabilities-v3.json"
+    },
+    {
+      "id": "v3-enrollment-missing-capabilities-before-unsupported-version",
+      "schema": "enrollment",
+      "fixture": "enrollment-missing-capabilities-unsupported-version-v3.json"
+    }
+  ],
+  "public_error_cases": [
+    {
+      "id": "missing-capabilities-valid-negotiation-is-invalid-enrollment",
+      "fixture": "enrollment-missing-capabilities-v3.json",
+      "expected_error": "invalid_enrollment"
+    },
+    {
+      "id": "missing-capabilities-unsupported-negotiation-is-invalid-enrollment",
+      "fixture": "enrollment-missing-capabilities-unsupported-version-v3.json",
+      "expected_error": "invalid_enrollment"
     }
   ]
 }
