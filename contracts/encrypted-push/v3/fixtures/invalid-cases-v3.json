@@ -1,0 +1,51 @@
+{
+  "schema_invalid": [
+    {
+      "id": "v3-enrollment-requires-import-seq",
+      "schema": "enrollment",
+      "fixture": "enrollment-missing-import-seq-v3.json"
+    },
+    {
+      "id": "v3-enrollment-rejects-zero-import-seq",
+      "schema": "enrollment",
+      "fixture": "enrollment-import-seq-zero-v3.json"
+    },
+    {
+      "id": "v3-event-rejects-noncanonical-key-id",
+      "schema": "event",
+      "fixture": "event-noncanonical-key-id-v3.json"
+    },
+    {
+      "id": "v3-event-requires-import-id",
+      "schema": "event",
+      "fixture": "event-missing-import-id-v3.json"
+    },
+    {
+      "id": "v3-enrollment-rejects-boolean-event-version-element",
+      "schema": "enrollment",
+      "fixture": "enrollment-bool-event-version-v3.json"
+    },
+    {
+      "id": "v3-enrollment-requires-capabilities-member",
+      "schema": "enrollment",
+      "fixture": "enrollment-missing-capabilities-v3.json"
+    },
+    {
+      "id": "v3-enrollment-missing-capabilities-before-unsupported-version",
+      "schema": "enrollment",
+      "fixture": "enrollment-missing-capabilities-unsupported-version-v3.json"
+    }
+  ],
+  "public_error_cases": [
+    {
+      "id": "missing-capabilities-valid-negotiation-is-invalid-enrollment",
+      "fixture": "enrollment-missing-capabilities-v3.json",
+      "expected_error": "invalid_enrollment"
+    },
+    {
+      "id": "missing-capabilities-unsupported-negotiation-is-invalid-enrollment",
+      "fixture": "enrollment-missing-capabilities-unsupported-version-v3.json",
+      "expected_error": "invalid_enrollment"
+    }
+  ]
+}

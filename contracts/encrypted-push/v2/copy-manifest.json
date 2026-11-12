@@ -1,0 +1,46 @@
+{
+  "manifest_version": 1,
+  "contract_version": "encrypted-push/v2",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "46cd3526ee9c030cf1256c0f4cbc866961a56fdbe134de5a7989a529e7810cc4"
+    },
+    {
+      "path": "control.schema.json",
+      "sha256": "8e74b85970506e601d4976d8dbef3f266ba869c2412c35d53ac0bc1bfe6fe9c5"
+    },
+    {
+      "path": "enrollment.schema.json",
+      "sha256": "582db9d4f2a2790ff8fc3a5bbdcd23349857a94c32ff1de9ec1ee8c86c593af5"
+    },
+    {
+      "path": "event.schema.json",
+      "sha256": "ed30d98be7a9497232efa9d1b3ab36edc3e266eda60655e04180872bc9244c3a"
+    },
+    {
+      "path": "fixtures/control-v2.json",
+      "sha256": "3a18c8693c1c5db3c60013dcf48d80d56d1a75e3565f9b5e959a779807d46658"
+    },
+    {
+      "path": "fixtures/enrollment-keyed.json",
+      "sha256": "103d2130a1fc8c095eabd4734a832519803641d575d7d708fa9286b99f6b7fa4"
+    },
+    {
+      "path": "fixtures/enrollment-unkeyed.json",
+      "sha256": "7cd3dc4ac33f611bb89c172fae841f9085738149ee8af6826f5a3c85d842f110"
+    },
+    {
+      "path": "fixtures/status-updated.json",
+      "sha256": "c7f390cc8909ee408bbe0c2d9cb7174efeff9c281ef83b9ac75c0a7bc2e641c3"
+    },
+    {
+      "path": "response.schema.json",
+      "sha256": "e52d724e05c9c48627d640c15a5c41402f4b6561d1a7522ddffbb323212d68c2"
+    },
+    {
+      "path": "tools/conformance.py",
+      "sha256": "be0f03822cd9ead3085d205e5ad9d47a6d122049faf5a9eb18c7d0cbf57b38d1"
+    }
+  ]
+}

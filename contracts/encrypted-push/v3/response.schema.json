@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cwa/colliesocket/contracts/encrypted-push/v3/response.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "enrollment_version",
+    "request_id",
+    "instance",
+    "subscription_epoch",
+    "selected_event_version",
+    "capabilities",
+    "status",
+    "replayed"
+  ],
+  "properties": {
+    "enrollment_version": {
+      "type": "integer",
+      "const": 3
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?![\\s\\S])",
+      "minLength": 36,
+      "maxLength": 36
+    },
+    "instance": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9._:-]{1,128})(?![\\s\\S])",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "subscription_epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "selected_event_version": {
+      "type": "integer",
+      "const": 3
+    },
+    "capabilities": {
+      "type": "array",
+      "const": [
+        "wake",
+        "test",
+        "status"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "unchanged"
+      ],
+      "description": "accepted is a newly applied import when replayed is false, or a saved historical receipt when replayed is true; unchanged is only an exact replay that still matches the current row."
+    },
+    "replayed": {
+      "type": "boolean",
+      "description": "True when this response replays an already-recorded request and does not report a newly-applied import. A historical replay does not confirm current registration state."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unchanged"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "replayed": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "replayed": {
+            "const": false
+          }
+        },
+        "required": [
+          "replayed"
+        ]
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "const": "accepted"
+          }
+        }
+      }
+    }
+  ]
+}

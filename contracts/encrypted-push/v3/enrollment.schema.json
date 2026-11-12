@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cwa/colliesocket/contracts/encrypted-push/v3/enrollment.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "enrollment_version",
+    "request_id",
+    "import_seq",
+    "account_id",
+    "device_id",
+    "password",
+    "subscription",
+    "control_key"
+  ],
+  "properties": {
+    "enrollment_version": {
+      "type": "integer",
+      "const": 3
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?![\\s\\S])",
+      "minLength": 36,
+      "maxLength": 36
+    },
+    "import_seq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807,
+      "description": "Strictly increasing import-intent counter for this registration instance; signed 64-bit range."
+    },
+    "account_id": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![\\s\\S])",
+      "minLength": 36,
+      "maxLength": 36
+    },
+    "device_id": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 2147483647
+    },
+    "password": {
+      "type": "string",
+      "pattern": "^(?:[ -~]{16,256})(?![\\s\\S])",
+      "minLength": 16,
+      "maxLength": 256
+    },
+    "subscription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint",
+        "p256dh",
+        "auth",
+        "instance",
+        "subscription_epoch",
+        "encryption_required",
+        "supported_event_versions",
+        "capabilities"
+      ],
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "pattern": "^(?:[!-~]{1,2048})(?![\\s\\S])",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "p256dh": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9_-]{87})(?![\\s\\S])",
+          "minLength": 87,
+          "maxLength": 87
+        },
+        "auth": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9_-]{22})(?![\\s\\S])",
+          "minLength": 22,
+          "maxLength": 22
+        },
+        "instance": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9._:-]{1,128})(?![\\s\\S])",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "subscription_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "encryption_required": {
+          "type": "boolean",
+          "const": true
+        },
+        "supported_event_versions": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "const": [
+            1,
+            2,
+            3
+          ]
+        },
+        "capabilities": {
+          "type": "array",
+          "const": [
+            "wake",
+            "test",
+            "status"
+          ]
+        }
+      }
+    },
+    "control_key": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048])(?![\\s\\S])",
+      "minLength": 43,
+      "maxLength": 43
+    }
+  }
+}

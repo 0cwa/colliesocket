@@ -1,0 +1,740 @@
+{
+  "fixture_version": 1,
+  "synthetic_only": true,
+  "legacy_enrollment_fixture": "contracts/encrypted-push/v2/fixtures/enrollment-keyed.json",
+  "adoption_enrollment_fixture": "enrollment-first-v3-adoption-v3.json",
+  "adoption_response_fixture": "response-first-v3-adoption-v3.json",
+  "adoption_event_fixture": "event-first-v3-adoption-v3.json",
+  "legacy_row": {
+    "import_seq": null,
+    "import_id": null,
+    "state": "active",
+    "durable_generation": 4,
+    "has_old_queued_work": true
+  },
+  "adoption_expectation": {
+    "same_epoch": true,
+    "supported_event_versions_change_only": [
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        2,
+        3
+      ]
+    ],
+    "durable_generation_rotates": true,
+    "old_queued_work_invalidated": true,
+    "enrollment_imported_enqueued_atomically": true,
+    "resulting_state": "active",
+    "generation_before": 4,
+    "generation_after": 5,
+    "row_state_after": "active",
+    "requires_existing_state": "active",
+    "active_row_claimable": true,
+    "inactive_same_epoch_response": {
+      "error": "epoch_conflict"
+    }
+  },
+  "rejected_adoption_mutations": [
+    {
+      "id": "adoption-changes-endpoint",
+      "path": "subscription.endpoint",
+      "value": "https://push.example.invalid/changed",
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "adoption-changes-control-key",
+      "path": "control_key",
+      "value": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "adoption-changes-p256dh",
+      "path": "subscription.p256dh",
+      "value": "BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E",
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "adoption-changes-auth",
+      "path": "subscription.auth",
+      "value": "AAAAAAAAAAAAAAAAAAAAAA",
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "adoption-changes-credentials",
+      "path": "password",
+      "value": "SYNTHETIC-OTHER-SIGNAL-CREDENTIAL",
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "adoption-changes-device",
+      "path": "device_id",
+      "value": 3,
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "adoption-changes-instance",
+      "path": "subscription.instance",
+      "value": "fixture-instance-2",
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "adoption-changes-capabilities",
+      "path": "subscription.capabilities",
+      "value": [
+        "wake",
+        "test"
+      ],
+      "expected_error": "capability_required",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "capability_required"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "adoption-missing-v3-negotiation",
+      "path": "subscription.supported_event_versions",
+      "value": [
+        1,
+        2
+      ],
+      "expected_error": "unsupported_version",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "unsupported_version"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "adoption-negotiation-boolean-is-not-integer",
+      "path": "subscription.supported_event_versions",
+      "value": [
+        true,
+        2,
+        3
+      ],
+      "expected_error": "invalid_enrollment",
+      "row_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "invalid_enrollment"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    }
+  ],
+  "legacy_floor_cases": [
+    {
+      "id": "legacy-known-exact-replay",
+      "same_request_id": true,
+      "same_digest": true,
+      "expected": "saved_receipt_no_mutation",
+      "receipt_fixture": "response-legacy-replay-v2.json",
+      "receipt_ledger_mutation": false,
+      "queue_mutation": false,
+      "row_mutation": false,
+      "historical_receipt_is_current_confirmation": false
+    },
+    {
+      "id": "legacy-fresh-mutating-request",
+      "same_request_id": false,
+      "same_digest": false,
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "receipt_ledger_mutation": false,
+      "queue_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    },
+    {
+      "id": "legacy-fresh-state-identical-request",
+      "same_request_id": false,
+      "same_digest": false,
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "receipt_ledger_mutation": false,
+      "queue_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false
+    }
+  ],
+  "phone_candidate_cases": [
+    {
+      "id": "same-key-adoption-binds-import-intent",
+      "lookup_order": [
+        "import_id",
+        "key_id"
+      ],
+      "candidate_import_id": "33333333-3333-4333-8333-333333333333",
+      "candidate_import_seq": 1,
+      "active_key_id": "mXw0XDWJSi-VIzvypI0-jVN2rgJWeIX4G6N60XnCvWM",
+      "candidate_key_id": "mXw0XDWJSi-VIzvypI0-jVN2rgJWeIX4G6N60XnCvWM",
+      "event_import_id": "33333333-3333-4333-8333-333333333333",
+      "event_key_id": "mXw0XDWJSi-VIzvypI0-jVN2rgJWeIX4G6N60XnCvWM",
+      "expected": "bind_candidate_sequence_and_intent"
+    },
+    {
+      "id": "receiver-binds-to-current-live-context",
+      "lookup_order": [
+        "import_id",
+        "key_id"
+      ],
+      "event_contains_account_id": false,
+      "binding_source": "live_signal_store_aci_device_and_current_instance",
+      "current_live_registration_context": {
+        "account_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "device_id": 2,
+        "instance": "fixture-instance"
+      },
+      "active_v3_registration_context": {
+        "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "device_id": 2,
+        "instance": "fixture-instance"
+      },
+      "candidate_registration_context": {
+        "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "device_id": 2,
+        "instance": "fixture-instance"
+      },
+      "both_active_v3_and_candidates_checked": true,
+      "stored_export_context_sufficient": false,
+      "expected": "no_promotion"
+    }
+  ],
+  "inactive_same_epoch_cases": [
+    {
+      "id": "inactive-adoption-stale",
+      "operation": "first_v3_adoption",
+      "row_state": "stale",
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "confirmation_queued": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false,
+      "activation": false
+    },
+    {
+      "id": "inactive-adoption-provider-rejected",
+      "operation": "first_v3_adoption",
+      "row_state": "provider_rejected",
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "confirmation_queued": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false,
+      "activation": false
+    },
+    {
+      "id": "inactive-reaffirmation-stale",
+      "operation": "same_epoch_reaffirmation",
+      "row_state": "stale",
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "confirmation_queued": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false,
+      "activation": false
+    },
+    {
+      "id": "inactive-reaffirmation-provider-rejected",
+      "operation": "same_epoch_reaffirmation",
+      "row_state": "provider_rejected",
+      "expected_error": "epoch_conflict",
+      "row_mutation": false,
+      "confirmation_queued": false,
+      "receipt_ledger_mutation": false,
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "generation_mutation": false,
+      "outbox_mutation": false,
+      "activation": false
+    }
+  ],
+  "inactive_recovery_case": {
+    "row_state": "stale",
+    "operation": "exact_next_epoch",
+    "fresh_control_key": true,
+    "expected": "accept_and_activate",
+    "resulting_state": "active"
+  },
+  "idempotence_and_status_retry_cases": [
+    {
+      "id": "active-current-exact-replay-coalesces",
+      "state": "active",
+      "current_import_id_matches": true,
+      "request_digest_matches": true,
+      "row_before": {
+        "epoch": 1,
+        "import_id": "33333333-3333-4333-8333-333333333333",
+        "import_seq": 1,
+        "generation": 5
+      },
+      "row_after": {
+        "epoch": 1,
+        "import_id": "33333333-3333-4333-8333-333333333333",
+        "import_seq": 1,
+        "generation": 5
+      },
+      "seconds_since_last_status_enqueue": 5,
+      "claimable_status_pending": true,
+      "expected_queue_action": "coalesce",
+      "response_fixture": "response-current-v3-replay.json",
+      "receipt_ledger_mutation": false,
+      "generation_mutation": false,
+      "context_unchanged": true,
+      "row_mutation": false,
+      "outbox_limits": {
+        "max_status_events_per_intent_per_30_seconds": 1,
+        "duplicate_claimable_statuses_after": 0,
+        "unclaimable_statuses_after": 0
+      },
+      "row_is_claimable": true,
+      "queue_count_before": 1,
+      "queue_count_after": 1,
+      "current_epoch_matches": true,
+      "current_key_matches": true,
+      "current_context_matches": true,
+      "current_import_seq_matches": true,
+      "current_generation_matches": true,
+      "claimable_status_count_after": 1,
+      "historical_replay_is_current_confirmation": null
+    },
+    {
+      "id": "active-status-retry-under-30-seconds",
+      "state": "active",
+      "current_import_id_matches": true,
+      "request_digest_matches": true,
+      "row_before": {
+        "epoch": 1,
+        "import_id": "33333333-3333-4333-8333-333333333333",
+        "import_seq": 1,
+        "generation": 5
+      },
+      "row_after": {
+        "epoch": 1,
+        "import_id": "33333333-3333-4333-8333-333333333333",
+        "import_seq": 1,
+        "generation": 5
+      },
+      "seconds_since_last_status_enqueue": 29,
+      "claimable_status_pending": false,
+      "expected_queue_action": "none",
+      "response_fixture": "response-current-v3-replay.json",
+      "receipt_ledger_mutation": false,
+      "generation_mutation": false,
+      "context_unchanged": true,
+      "row_mutation": false,
+      "outbox_limits": {
+        "max_status_events_per_intent_per_30_seconds": 1,
+        "duplicate_claimable_statuses_after": 0,
+        "unclaimable_statuses_after": 0
+      },
+      "row_is_claimable": true,
+      "queue_count_before": 0,
+      "queue_count_after": 0,
+      "current_epoch_matches": true,
+      "current_key_matches": true,
+      "current_context_matches": true,
+      "current_import_seq_matches": true,
+      "current_generation_matches": true,
+      "claimable_status_count_after": 0,
+      "historical_replay_is_current_confirmation": null
+    },
+    {
+      "id": "active-status-retry-at-30-seconds",
+      "state": "active",
+      "current_import_id_matches": true,
+      "request_digest_matches": true,
+      "row_before": {
+        "epoch": 1,
+        "import_id": "33333333-3333-4333-8333-333333333333",
+        "import_seq": 1,
+        "generation": 5
+      },
+      "row_after": {
+        "epoch": 1,
+        "import_id": "33333333-3333-4333-8333-333333333333",
+        "import_seq": 1,
+        "generation": 5
+      },
+      "seconds_since_last_status_enqueue": 30,
+      "claimable_status_pending": false,
+      "expected_queue_action": "enqueue_one",
+      "response_fixture": "response-current-v3-replay.json",
+      "receipt_ledger_mutation": false,
+      "generation_mutation": false,
+      "context_unchanged": true,
+      "row_mutation": false,
+      "outbox_limits": {
+        "max_status_events_per_intent_per_30_seconds": 1,
+        "duplicate_claimable_statuses_after": 0,
+        "unclaimable_statuses_after": 0
+      },
+      "row_is_claimable": true,
+      "queue_count_before": 0,
+      "queue_count_after": 1,
+      "current_epoch_matches": true,
+      "current_key_matches": true,
+      "current_context_matches": true,
+      "current_import_seq_matches": true,
+      "current_generation_matches": true,
+      "claimable_status_count_after": 1,
+      "historical_replay_is_current_confirmation": null
+    },
+    {
+      "id": "active-pending-status-is-coalesced",
+      "state": "active",
+      "current_import_id_matches": true,
+      "request_digest_matches": true,
+      "row_before": {
+        "epoch": 1,
+        "import_id": "33333333-3333-4333-8333-333333333333",
+        "import_seq": 1,
+        "generation": 5
+      },
+      "row_after": {
+        "epoch": 1,
+        "import_id": "33333333-3333-4333-8333-333333333333",
+        "import_seq": 1,
+        "generation": 5
+      },
+      "seconds_since_last_status_enqueue": 31,
+      "claimable_status_pending": true,
+      "expected_queue_action": "coalesce",
+      "response_fixture": "response-current-v3-replay.json",
+      "receipt_ledger_mutation": false,
+      "generation_mutation": false,
+      "context_unchanged": true,
+      "row_mutation": false,
+      "outbox_limits": {
+        "max_status_events_per_intent_per_30_seconds": 1,
+        "duplicate_claimable_statuses_after": 0,
+        "unclaimable_statuses_after": 0
+      },
+      "row_is_claimable": true,
+      "queue_count_before": 1,
+      "queue_count_after": 1,
+      "current_epoch_matches": true,
+      "current_key_matches": true,
+      "current_context_matches": true,
+      "current_import_seq_matches": true,
+      "current_generation_matches": true,
+      "claimable_status_count_after": 1,
+      "historical_replay_is_current_confirmation": null
+    },
+    {
+      "id": "inactive-status-retry-does-not-queue",
+      "state": "stale",
+      "current_import_id_matches": true,
+      "request_digest_matches": true,
+      "row_before": {
+        "epoch": 1,
+        "import_id": "33333333-3333-4333-8333-333333333333",
+        "import_seq": 1,
+        "generation": 5
+      },
+      "row_after": {
+        "epoch": 1,
+        "import_id": "33333333-3333-4333-8333-333333333333",
+        "import_seq": 1,
+        "generation": 5
+      },
+      "seconds_since_last_status_enqueue": 31,
+      "claimable_status_pending": false,
+      "expected_queue_action": "none",
+      "response_fixture": "response-historical-v3-replay.json",
+      "receipt_ledger_mutation": false,
+      "generation_mutation": false,
+      "context_unchanged": true,
+      "row_mutation": false,
+      "outbox_limits": {
+        "max_status_events_per_intent_per_30_seconds": 1,
+        "duplicate_claimable_statuses_after": 0,
+        "unclaimable_statuses_after": 0
+      },
+      "row_is_claimable": false,
+      "queue_count_before": 0,
+      "queue_count_after": 0,
+      "claimable_status_count_after": 0,
+      "historical_replay_is_current_confirmation": false
+    },
+    {
+      "id": "historical-v3-replay-is-not-current",
+      "state": "active",
+      "current_import_id_matches": false,
+      "request_digest_matches": true,
+      "row_before": {
+        "epoch": 1,
+        "import_id": "44444444-4444-4444-8444-444444444444",
+        "import_seq": 2,
+        "generation": 6
+      },
+      "row_after": {
+        "epoch": 1,
+        "import_id": "44444444-4444-4444-8444-444444444444",
+        "import_seq": 2,
+        "generation": 6
+      },
+      "seconds_since_last_status_enqueue": 60,
+      "claimable_status_pending": false,
+      "expected_queue_action": "none",
+      "response_fixture": "response-historical-v3-replay.json",
+      "receipt_ledger_mutation": false,
+      "generation_mutation": false,
+      "context_unchanged": true,
+      "row_mutation": false,
+      "outbox_limits": {
+        "max_status_events_per_intent_per_30_seconds": 1,
+        "duplicate_claimable_statuses_after": 0,
+        "unclaimable_statuses_after": 0
+      },
+      "row_is_claimable": true,
+      "queue_count_before": 0,
+      "queue_count_after": 0,
+      "claimable_status_count_after": 0,
+      "historical_replay_is_current_confirmation": false
+    }
+  ],
+  "conflicting_id_cases": [
+    {
+      "id": "v3-repeated-request-id-conflicting-digest",
+      "same_request_id": true,
+      "same_digest": false,
+      "expected_error": "idempotency_conflict",
+      "expected_response": {
+        "error": "idempotency_conflict"
+      },
+      "row_mutation": false,
+      "generation_mutation": false,
+      "outbox_mutation": false,
+      "receipt_ledger_mutation": false
+    }
+  ],
+  "legacy_unkeyed_same_epoch_case": {
+    "id": "legacy-unkeyed-cannot-adopt-same-epoch",
+    "legacy_enrollment_fixture": "contracts/encrypted-push/v2/fixtures/enrollment-unkeyed.json",
+    "legacy_row": {
+      "state": "active",
+      "import_seq": null,
+      "control_key": null
+    },
+    "same_epoch_v3_request_fixture": "enrollment-first-v3-adoption-v3.json",
+    "expected_error": "epoch_conflict",
+    "expected_response": {
+      "error": "epoch_conflict"
+    },
+    "row_mutation": false,
+    "generation_mutation": false,
+    "outbox_mutation": false,
+    "receipt_ledger_mutation": false,
+    "recovery_path": "exact_next_epoch_with_fresh_control_key"
+  },
+  "active_reaffirmation_case": {
+    "id": "active-higher-sequence-same-key-reaffirmation",
+    "row": {
+      "state": "active",
+      "epoch": 5,
+      "key_id": "K1",
+      "import_id": "A",
+      "import_seq": 8,
+      "generation": 4,
+      "context_unchanged": true,
+      "claimable": true
+    },
+    "incoming": {
+      "epoch": 5,
+      "key_id": "K1",
+      "import_id": "55555555-5555-4555-8555-555555555555",
+      "import_seq": 9,
+      "fresh_request_id": true,
+      "context_unchanged": true
+    },
+    "expected": "accept",
+    "old_queued_work_invalidated": true,
+    "enrollment_imported_enqueued_atomically": true,
+    "resulting_state": "active",
+    "queued_status_claimable": true,
+    "response_fixture": "response-reaffirm-v3.json",
+    "response_has_no_key_or_sequence": true,
+    "generation_after": 5
+  },
+  "account_selection_cases": [
+    {
+      "id": "independent-account-b-epoch1-create",
+      "selected_account_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "request_id": "66666666-6666-4666-8666-666666666666",
+      "request_id_state_in_selected_account": "unseen",
+      "receipt_lookup_scope": [
+        "account_id",
+        "request_id"
+      ],
+      "selected_row_before": "absent",
+      "other_existing_account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "row_comparisons": "selected_account_only",
+      "server_cross_account_key_guard": false,
+      "same_control_key_bytes_as_a": true,
+      "client_requires_fresh_control_key_for_new_registration": true,
+      "enrollment_fixture": "enrollment-independent-account-b-v3.json",
+      "expected": "create_b",
+      "expected_response_fixture": "response-independent-account-b-v3.json",
+      "expected_event_fixture": "event-independent-account-b-v3.json",
+      "legacy_a_unchanged": true,
+      "new_b_active_and_claimable": true,
+      "new_b_enrollment_imported_queued_atomically": true,
+      "key_id_is_account_context_bound": true,
+      "shared_secret_compromise_couples_accounts": true,
+      "existing_account_a": {
+        "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "source_fixture": "contracts/encrypted-push/v2/fixtures/enrollment-keyed.json",
+        "state": "active",
+        "subscription_epoch": 1,
+        "import_seq": null
+      },
+      "server_oracle_probe_reuses_key_for_boundary_only": true
+    },
+    {
+      "id": "absent-account-b-epoch-above-one-rejected",
+      "selected_account_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "request_id": "77777777-7777-4777-8777-777777777777",
+      "request_id_state_in_selected_account": "unseen",
+      "receipt_lookup_scope": [
+        "account_id",
+        "request_id"
+      ],
+      "selected_row_before": "absent",
+      "other_existing_account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "row_comparisons": "selected_account_only",
+      "server_cross_account_key_guard": false,
+      "enrollment_fixture": "enrollment-absent-account-b-epoch2-v3.json",
+      "expected": "reject",
+      "expected_error": "epoch_conflict",
+      "expected_response": {
+        "error": "epoch_conflict"
+      },
+      "legacy_a_unchanged": true,
+      "row_mutation": false,
+      "generation_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false,
+      "existing_account_a": {
+        "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "source_fixture": "contracts/encrypted-push/v2/fixtures/enrollment-keyed.json",
+        "state": "active",
+        "subscription_epoch": 1,
+        "import_seq": null
+      },
+      "expected_error_fixture": "error-epoch-conflict.json"
+    }
+  ],
+  "validation_precedence_cases": [
+    {
+      "id": "unsupported-version-precedes-capability-validation",
+      "supported_event_versions": [
+        1,
+        2
+      ],
+      "capabilities": [
+        "wake",
+        "test"
+      ],
+      "validation_order": [
+        "supported_event_versions",
+        "capabilities"
+      ],
+      "expected_error": "unsupported_version",
+      "expected_response": {
+        "error": "unsupported_version"
+      },
+      "row_mutation": false,
+      "generation_mutation": false,
+      "queue_mutation": false,
+      "receipt_ledger_mutation": false
+    }
+  ]
+}
