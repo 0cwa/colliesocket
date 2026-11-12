@@ -208,7 +208,7 @@ class FakeSignal:
                     except ssl.SSLError as error:
                         _require(error.reason in {
                             "TLSV1_ALERT_UNKNOWN_CA", "SSLV3_ALERT_BAD_CERTIFICATE",
-                            "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
+                            "SSLV3_ALERT_CERTIFICATE_UNKNOWN", "TLS_ALERT_CERTIFICATE_UNKNOWN",
                         }, "TLS handshake failed without a certificate rejection alert")
                         fixture._tls_failures.put("client rejected synthetic TLS certificate")
                         return
