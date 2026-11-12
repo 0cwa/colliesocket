@@ -1,5 +1,8 @@
 # Operating the CollieSocket encrypted-push v1 candidate
 
+For canonical enrollment-v2 servers and database migration, use the
+[v2 operator guide](encrypted-push-v2.md) alongside this v1 reference.
+
 This guide covers the server candidate and its protected local operator interface.
 Start with [`handoff/parallel-start-v2.json`](../handoff/parallel-start-v2.json)
 for the published contract pin, fixture-manifest hash, ownership, and launch
