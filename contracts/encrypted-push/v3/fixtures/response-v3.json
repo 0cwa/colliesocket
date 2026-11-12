@@ -9,5 +9,6 @@
     "test",
     "status"
   ],
-  "status": "accepted"
+  "status": "accepted",
+  "replayed": false
 }

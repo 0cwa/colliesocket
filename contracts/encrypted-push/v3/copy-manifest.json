@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "README.md",
-      "sha256": "ed344bac7ec0056fb4e24a9fed32f0f2a8223cf3429d6fc9646eb26f6fdeb12d"
+      "sha256": "20b4ffd620dcb570ad77a9f1e36a4f559d121c40124901a3816e434864272a48"
     },
     {
       "path": "enrollment.schema.json",
@@ -13,6 +13,10 @@
     {
       "path": "event.schema.json",
       "sha256": "ea42adbec3a5ff77aed06f3a10729e37778874bd2325fed7958cd98771c38e72"
+    },
+    {
+      "path": "fixtures/enrollment-first-v3-adoption-v3.json",
+      "sha256": "877735ec376f688d9ad4dada2acec800b88a325d0fe4d351a96cfc0b5bf6701d"
     },
     {
       "path": "fixtures/enrollment-import-seq-zero-v3.json",
@@ -27,8 +31,24 @@
       "sha256": "d659c41451027531ab15f629ac8c1b18dd7f3d83744b9575da19c507e4edf6a7"
     },
     {
+      "path": "fixtures/error-epoch-conflict.json",
+      "sha256": "0455c015c45727cf3d4ef81879b77755c7f17839b63036292798e6f3d1d4074d"
+    },
+    {
+      "path": "fixtures/error-idempotency-conflict.json",
+      "sha256": "22b9272313aad279a02b39754df39603efc928961e5b574cc1fb94610e02eb5b"
+    },
+    {
+      "path": "fixtures/error-invalid-enrollment.json",
+      "sha256": "7e5a1c0b1508351449fbe76a4e25ce0e4140bd1d87b96c6cd5792164d2269b73"
+    },
+    {
       "path": "fixtures/event-enrollment-imported-v3.json",
       "sha256": "5279a8e9c095976ae55ff56c30a1a5ed971a79790ebb2f69f29684539539360a"
+    },
+    {
+      "path": "fixtures/event-first-v3-adoption-v3.json",
+      "sha256": "5b732e596e2c1bc937629e9a3095229c00c854853a2e9da044d8c278ba004655"
     },
     {
       "path": "fixtures/event-missing-import-id-v3.json",
@@ -51,6 +71,10 @@
       "sha256": "3281f393df315c8f43471820d62789b23339d530a99fa0e413b8b20dbfe4b713"
     },
     {
+      "path": "fixtures/first-v3-adoption-cases-v3.json",
+      "sha256": "2f2e3cfa5798c32a06b90c459e19e8f94909e542476e1763a1c1778e82aa1740"
+    },
+    {
       "path": "fixtures/invalid-cases-v3.json",
       "sha256": "c3a6ce80e4b2bbed0304c6f29069e1e3be131e3ab6c8a35f5188dcb7e4e35795"
     },
@@ -59,24 +83,48 @@
       "sha256": "10de883e9340f00c8dcfca3b243c6283e2904443bbbf104c606e0a8b4f0e6cec"
     },
     {
+      "path": "fixtures/response-current-v3-replay.json",
+      "sha256": "9b402f610078b1da952e3ebc252b0750a03dcb817fa4556729546c88246ef66a"
+    },
+    {
+      "path": "fixtures/response-first-v3-adoption-v3.json",
+      "sha256": "801969a1d1c358a7f6d679da0583e3f95c20c43c979962df20021571b6676b9f"
+    },
+    {
+      "path": "fixtures/response-historical-v3-replay.json",
+      "sha256": "792d3f9b6d40a4a9cf2e79d5e2ea67df3c1667e6c52714c78dee757857a662c4"
+    },
+    {
+      "path": "fixtures/response-legacy-replay-v2.json",
+      "sha256": "bd3b248d149b2216dcb54129723850d9c4cbb0ef90314dde20b6280734929cb4"
+    },
+    {
+      "path": "fixtures/response-reaffirm-v3.json",
+      "sha256": "e37dc2f64b0e600c30a825550cc3534aa7ab23e44e7fcfd2e70a88e3e4ac5898"
+    },
+    {
       "path": "fixtures/response-v3.json",
-      "sha256": "7bb68a78f33ddba8b43d14f777ad938c675d3c156079f81433e95344db97e893"
+      "sha256": "788559c2b2432b22f045523f4642ed0fee71d4e9af67b886bacaa36626b7ca15"
     },
     {
       "path": "fixtures/runtime-cases-v3.json",
-      "sha256": "13809e946dee176b24d7871cf93ce69e0c76f32d5f6c8720f3293388da728c90"
+      "sha256": "9d93924f6c1fe049b373410a9dc0b44f9717b08ab60c109206805774ca743502"
+    },
+    {
+      "path": "fixtures/status-operator-v3.json",
+      "sha256": "1c88fd4bf80682901ae9977533a397566ebe2afc68ffb215f43ff9c33acc1b72"
     },
     {
       "path": "response.schema.json",
-      "sha256": "5fe228d9598da5887f62e8ba06792996017af5499ae31be913f77cd50731c1c5"
-    },
-    {
-      "path": "tools/__pycache__/conformance.cpython-314.pyc",
-      "sha256": "cecf56af89c5f27c29312fd382537e835cb86fa349cf7f73f78d1a1e1be79f59"
+      "sha256": "87b11df9e441f18729edbee43a682af337048550d7900a06087bca93fc08b6be"
     },
     {
       "path": "tools/conformance.py",
-      "sha256": "38ed1c83379bea2f69e4dd5ec4982f28038d8303acebe278a97cf702ff60ce54"
+      "sha256": "3f2adc480de9e2bb4fc0482b90a804dea5809f8d66b80b16d58d6b27f2abcaae"
+    },
+    {
+      "path": "tools/copy_manifest.py",
+      "sha256": "c0c55acd5763f258884d5e77a054a13a688b42f3c1323f473000e46062475420"
     }
   ]
 }

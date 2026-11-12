@@ -10,7 +10,8 @@
     "subscription_epoch",
     "selected_event_version",
     "capabilities",
-    "status"
+    "status",
+    "replayed"
   ],
   "properties": {
     "enrollment_version": {
@@ -51,7 +52,52 @@
       "enum": [
         "accepted",
         "unchanged"
-      ]
+      ],
+      "description": "accepted is a newly applied import when replayed is false, or a saved historical receipt when replayed is true; unchanged is only an exact replay that still matches the current row."
+    },
+    "replayed": {
+      "type": "boolean",
+      "description": "True when this response replays an already-recorded request and does not report a newly-applied import. A historical replay does not confirm current registration state."
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unchanged"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "replayed": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "replayed": {
+            "const": false
+          }
+        },
+        "required": [
+          "replayed"
+        ]
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "const": "accepted"
+          }
+        }
+      }
+    }
+  ]
 }
