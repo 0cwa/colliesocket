@@ -193,10 +193,9 @@ negotiation is `unsupported_version`; a present but different capabilities
 array is `capability_required`; stale or incompatible row state is
 `epoch_conflict`; and a recorded request ID with a different digest in the
 selected account is `idempotency_conflict`. Required fields must first
-deserialize successfully. After the encryption-required check, supported event
-versions are checked before the present capabilities array value. Thus
-unsupported negotiation plus changed capabilities returns
-`unsupported_version`. A missing required field fails typed decoding as
+deserialize successfully. After successful typed decoding, unsupported
+event-version negotiation takes precedence over a present, well-typed but
+different capabilities array. A missing required field fails typed decoding as
 `invalid_enrollment`, including when the version list would also be
 unsupported.
 
