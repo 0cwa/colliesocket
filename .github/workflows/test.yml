@@ -28,13 +28,15 @@ jobs:
           python-version: '3.12'
       - name: Install pinned verifiers
         run: |
-          rustup toolchain install 1.90.0 --profile minimal --component rustfmt
+          rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
           python3 -m pip install -r contracts/encrypted-push/v1/tools/requirements.txt -r crates/colliesocket-push/tools/requirements.txt
       - name: Frozen contract conformance
         run: python3 contracts/encrypted-push/v1/tools/conformance.py
       - name: Enrollment v2 and independent control-frame conformance
         run: python3 contracts/encrypted-push/v2/tools/conformance.py
       - run: python3 contracts/encrypted-push/v3/tools/conformance.py
+      - name: Clippy for the push crate, tests and fixture generator
+        run: cargo +1.90.0 clippy --locked --manifest-path crates/colliesocket-push/Cargo.toml --all-targets --no-deps
       - name: Published vector and independent decryption
         run: |
           cargo +1.90.0 fmt --manifest-path crates/colliesocket-push/Cargo.toml -- --check
@@ -57,13 +59,15 @@ jobs:
           python-version: '3.12'
       - name: Install pinned verifier and toolchain
         run: |
-          rustup toolchain install 1.90.0 --profile minimal --component rustfmt
+          rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
           python3 -m pip install -r contracts/encrypted-push/v1/tools/requirements.txt -r crates/colliesocket-push/tools/requirements.txt
       - name: Format, public image pins and locked unit tests
         run: |
           cargo +1.90.0 fmt --all -- --check
           python3 tools/image/check-pins.py
           cargo +1.90.0 test --locked
+      - name: Clippy for the server and tests
+        run: cargo +1.90.0 clippy --locked --all-targets --no-deps
       - name: Synthetic CLI, transport and independent decryption
         shell: bash
         run: |
@@ -96,7 +100,7 @@ jobs:
           python-version: '3.12'
       - name: Install pinned verifier and toolchain
         run: |
-          rustup toolchain install 1.90.0 --profile minimal --component rustfmt
+          rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
           python3 -m pip install -r crates/colliesocket-push/tools/requirements.txt
       - name: Test-only configuration and real websocket delivery
         shell: bash
@@ -105,6 +109,8 @@ jobs:
           cargo +1.90.0 test --locked --features test-signal
           cargo +1.90.0 build --locked --features test-signal
           python3 tests/signal_e2e.py --binary target/debug/mollysocket --output "$RUNNER_TEMP/colliesocket-signal-e2e.json"
+      - name: Clippy for the test-only Signal feature
+        run: cargo +1.90.0 clippy --locked --all-targets --features test-signal --no-deps
       - name: Release excludes overrides with all features and debug assertions
         env:
           CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: 'true'
