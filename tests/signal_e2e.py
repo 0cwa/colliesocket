@@ -308,6 +308,7 @@ class SignalHarness(Harness):
         )[0][0]
         require(len(queued_events) == 1 and self.current()["event_version"] == 3,
                 f"v3 import did not activate a single v3 status event (queued={len(queued_events)}, ledger={ledger_count})")
+        status_event_id = queued_events[0][0]
         credentials = f"{ACCOUNT}.{enrollment['device_id']}:{PASSWORD}"
 
         with FakeSignal(self.directory / "v3-signal-tls", credentials) as signal:
@@ -315,13 +316,8 @@ class SignalHarness(Harness):
                 self.start_signal_worker(signal)
                 signal.wait_connected()
                 self.mark("real worker authenticates the synthetic Signal device after v3 private import")
-                queued = self.rows(
-                    "SELECT event_id FROM encrypted_push_queue WHERE account_id=?",
-                    (ACCOUNT,),
-                )
-                require(len(queued) == 1, "v3 enrollment_imported event was not queued exactly once")
                 self.capture_v3_provider_request(
-                    enrollment, sent_at, queued[0][0], "status", "enrollment_imported"
+                    enrollment, sent_at, status_event_id, "status", "enrollment_imported"
                 )
                 self.mark("real worker sends encrypted enrollment_imported; independent decrypt matches import_id and HMAC key_id")
                 self.require_no_push()
