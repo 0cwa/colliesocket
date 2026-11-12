@@ -83,6 +83,15 @@ def exact_keys(value, expected, label):
         raise ValueError(f"invalid_{label}_members")
 
 
+def exact_v3_negotiation(versions):
+    return (
+        type(versions) is list
+        and len(versions) == 3
+        and all(type(version) is int for version in versions)
+        and versions == [1, 2, 3]
+    )
+
+
 def validate_enrollment(value):
     exact_keys(value, {
         "enrollment_version", "request_id", "import_seq", "account_id", "device_id",
@@ -120,10 +129,13 @@ def validate_enrollment(value):
         raise ValueError("invalid_epoch")
     if sub["encryption_required"] is not True:
         raise ValueError("encryption_required")
-    if sub["supported_event_versions"] != [1, 2, 3]:
-        raise ValueError("invalid_event_negotiation")
+    versions = sub["supported_event_versions"]
+    if type(versions) is not list or any(type(version) is not int for version in versions):
+        raise ValueError("invalid_enrollment")
+    if not exact_v3_negotiation(versions):
+        raise ValueError("unsupported_version")
     if sub["capabilities"] != ["wake", "test", "status"]:
-        raise ValueError("invalid_capabilities")
+        raise ValueError("capability_required")
     return value
 
 
@@ -153,6 +165,21 @@ def validate_response(value):
         raise ValueError("unchanged_must_be_replayed")
     if not value["replayed"] and value["status"] != "accepted":
         raise ValueError("new_import_must_be_accepted")
+    return value
+
+
+ERROR_CODES = {
+    "invalid_json", "input_too_large", "unsafe_file", "invalid_enrollment",
+    "invalid_endpoint", "unsupported_version", "capability_required",
+    "encryption_required", "invalid_key", "idempotency_conflict",
+    "epoch_conflict", "capacity_exceeded", "queue_full", "state_unavailable",
+}
+
+
+def validate_error_response(value):
+    exact_keys(value, {"error"}, "error_response")
+    if type(value["error"]) is not str or value["error"] not in ERROR_CODES:
+        raise ValueError("invalid_error_code")
     return value
 
 
@@ -198,6 +225,10 @@ def first_v3_adoption_matches(legacy, incoming, row_state="active"):
     if (row_state != "active" or legacy.get("enrollment_version") != 2
             or "control_key" not in legacy or legacy.get("control_key") is None):
         return False
+    incoming_subscription = incoming.get("subscription")
+    if (not isinstance(incoming_subscription, dict)
+            or not exact_v3_negotiation(incoming_subscription.get("supported_event_versions"))):
+        return False
     if incoming.get("request_id") == legacy.get("request_id"):
         return False
     sequence = incoming.get("import_seq")
@@ -223,6 +254,7 @@ def check_schema_shapes():
     enrollment = read_json(ROOT / "enrollment.schema.json")
     response = read_json(ROOT / "response.schema.json")
     event = read_json(ROOT / "event.schema.json")
+    error = read_json(ROOT / "error.schema.json")
     assert enrollment["additionalProperties"] is False
     assert set(enrollment["required"]) == {
         "enrollment_version", "request_id", "import_seq", "account_id", "device_id",
@@ -231,7 +263,9 @@ def check_schema_shapes():
     assert enrollment["properties"]["import_seq"]["minimum"] == 1
     assert enrollment["properties"]["import_seq"]["maximum"] == 9223372036854775807
     assert enrollment["properties"]["enrollment_version"]["const"] == 3
-    assert enrollment["properties"]["subscription"]["properties"]["supported_event_versions"]["const"] == [1, 2, 3]
+    versions_schema = enrollment["properties"]["subscription"]["properties"]["supported_event_versions"]
+    assert versions_schema["const"] == [1, 2, 3]
+    assert versions_schema["items"]["type"] == "integer"
     assert response["additionalProperties"] is False
     assert response["properties"]["enrollment_version"]["const"] == 3
     assert response["properties"]["selected_event_version"]["const"] == 3
@@ -250,6 +284,9 @@ def check_schema_shapes():
     assert event["properties"]["key_id"]["maxLength"] == 43
     assert "import_seq" not in event["properties"]
     assert "enrollment_imported" in event["properties"]["code"]["enum"]
+    assert error["additionalProperties"] is False
+    assert error["properties"]["error"]["type"] == "string"
+    assert set(error["properties"]["error"]["enum"]) == ERROR_CODES
     for old_path, version in [
         (V1 / "event.schema.json", 1),
         (V2 / "event.schema.json", 2),
@@ -263,7 +300,7 @@ def check_schema_shapes():
 def check_schema_instances():
     validators = {
         name: Draft202012Validator(read_json(ROOT / f"{name}.schema.json"))
-        for name in ("enrollment", "response", "event")
+        for name in ("enrollment", "response", "event", "error")
     }
     for validator in validators.values():
         validator.check_schema(validator.schema)
@@ -271,6 +308,8 @@ def check_schema_instances():
         "enrollment": [
             "enrollment-keyed-v3.json",
             "enrollment-first-v3-adoption-v3.json",
+            "enrollment-independent-account-b-v3.json",
+            "enrollment-absent-account-b-epoch2-v3.json",
         ],
         "response": [
             "response-v3.json",
@@ -282,9 +321,17 @@ def check_schema_instances():
         "event": [
             "event-enrollment-imported-v3.json",
             "event-first-v3-adoption-v3.json",
+            "event-independent-account-b-v3.json",
             "event-subscription-updated-v3.json",
             "event-wake-v3.json",
             "event-test-v3.json",
+        ],
+        "error": [
+            "error-epoch-conflict.json",
+            "error-idempotency-conflict.json",
+            "error-invalid-enrollment.json",
+            "error-capability-required.json",
+            "error-unsupported-version.json",
         ],
     }
     valid_count = 0
@@ -296,7 +343,12 @@ def check_schema_instances():
             valid_count += 1
     response = read_json(ROOT / "fixtures/response-current-v3-replay.json")
     assert not validators["response"].is_valid(dict(response, status="unchanged", replayed=False))
-    return valid_count
+    invalid_count = 0
+    for case in read_json(ROOT / "fixtures/invalid-cases-v3.json")["schema_invalid"]:
+        value = read_json(ROOT / "fixtures" / case["fixture"])
+        assert not validators[case["schema"]].is_valid(value), case["id"]
+        invalid_count += 1
+    return valid_count, invalid_count
 
 
 def check_copy_manifest(directory, version):
@@ -331,7 +383,18 @@ def check_transient_artifact_exclusion():
     ]
     assert canonical_paths(sample) == ["README.md", "tools/conformance.py"]
     assert "tools/__pycache__/conformance.cpython-314.pyc" not in canonical_paths(sample)
-    return len(sample) - 2
+    cache_dir = ROOT / "tools" / "__pycache__"
+    directory_preexisted = cache_dir.exists()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    generated = cache_dir / f"inventory-regression-{uuid.uuid4().hex}.pyc"
+    try:
+        generated.write_bytes(b"synthetic generated bytecode")
+        assert generated.relative_to(ROOT).as_posix() not in inventory(ROOT)
+    finally:
+        generated.unlink(missing_ok=True)
+        if not directory_preexisted and not any(cache_dir.iterdir()):
+            cache_dir.rmdir()
+    return len(sample) - 2 + 1
 
 
 def must_reject(operation, label):
@@ -344,9 +407,20 @@ def must_reject(operation, label):
     raise AssertionError(f"accepted invalid synthetic case: {label}")
 
 
+def must_reject_with(operation, label, expected):
+    global NEGATIVE_CHECKS
+    try:
+        operation()
+    except ValueError as error:
+        assert str(error) == expected, (label, str(error), expected)
+        NEGATIVE_CHECKS += 1
+        return
+    raise AssertionError(f"accepted or misclassified synthetic case: {label}")
+
+
 def main():
     check_schema_shapes()
-    schema_fixture_count = check_schema_instances()
+    schema_fixture_count, schema_invalid_fixture_count = check_schema_instances()
     excluded_transient_paths = check_transient_artifact_exclusion()
     v2_manifest_files = check_copy_manifest(V2, 2)
     v3_manifest_files = check_copy_manifest(ROOT, 3)
@@ -414,7 +488,7 @@ def main():
         "state": "active", "import_seq": None, "control_key": None,
     }
     assert unkeyed_case["expected_error"] == "epoch_conflict"
-    assert unkeyed_case["expected_response"] == {"error": "epoch_conflict"}
+    assert validate_error_response(unkeyed_case["expected_response"]) == {"error": "epoch_conflict"}
     assert all(unkeyed_case[field] is False for field in (
         "row_mutation", "generation_mutation", "outbox_mutation", "receipt_ledger_mutation",
     ))
@@ -444,12 +518,18 @@ def main():
         bad = copy.deepcopy(adoption)
         set_path(bad, case["path"], case["value"])
         assert not first_v3_adoption_matches(legacy, bad), case["id"]
-        if case["expected_error"] == "invalid_enrollment":
-            must_reject(lambda b=bad: validate_enrollment(b), case["id"])
+        if case["expected_error"] in (
+            "invalid_enrollment", "unsupported_version", "capability_required",
+        ):
+            must_reject_with(
+                lambda b=bad: validate_enrollment(b), case["id"], case["expected_error"],
+            )
         else:
             validate_enrollment(bad)
             assert case["expected_error"] == "epoch_conflict"
-        assert case["expected_response"] == {"error": case["expected_error"]}
+        assert validate_error_response(case["expected_response"]) == {
+            "error": case["expected_error"],
+        }
         assert all(case[field] is False for field in (
             "row_mutation", "generation_mutation", "outbox_mutation",
             "queue_mutation", "receipt_ledger_mutation",
@@ -458,7 +538,7 @@ def main():
     assert len(adoption_cases["inactive_same_epoch_cases"]) == 4
     for case in adoption_cases["inactive_same_epoch_cases"]:
         assert case["expected_error"] == "epoch_conflict"
-        assert case["expected_response"] == {"error": "epoch_conflict"}
+        assert validate_error_response(case["expected_response"]) == {"error": "epoch_conflict"}
         assert case["row_mutation"] is False and case["generation_mutation"] is False
         assert case["outbox_mutation"] is False and case["receipt_ledger_mutation"] is False
         assert case["confirmation_queued"] is False and case["activation"] is False
@@ -484,20 +564,24 @@ def main():
                 if case["id"] == "legacy-known-exact-replay")["historical_receipt_is_current_confirmation"] is False
     for case in adoption_cases["legacy_floor_cases"]:
         if "expected_error" in case:
-            assert case["expected_response"] == {"error": "epoch_conflict"}
+            assert validate_error_response(case["expected_response"]) == {"error": "epoch_conflict"}
             assert case["row_mutation"] is False and case["generation_mutation"] is False
             assert case["outbox_mutation"] is False and case["receipt_ledger_mutation"] is False
     for name, expected in (
         ("error-epoch-conflict.json", "epoch_conflict"),
         ("error-idempotency-conflict.json", "idempotency_conflict"),
         ("error-invalid-enrollment.json", "invalid_enrollment"),
+        ("error-capability-required.json", "capability_required"),
+        ("error-unsupported-version.json", "unsupported_version"),
     ):
         error_response = read_json(ROOT / "fixtures" / name)
-        exact_keys(error_response, {"error"}, "generic_error_response")
+        validate_error_response(error_response)
         assert error_response["error"] == expected
         assert not ({"request_id", "import_id", "import_seq", "key_id"} & set(error_response))
     conflict = adoption_cases["conflicting_id_cases"][0]
-    assert conflict["expected_response"] == {"error": "idempotency_conflict"}
+    assert validate_error_response(conflict["expected_response"]) == {
+        "error": "idempotency_conflict",
+    }
     assert all(conflict[field] is False for field in (
         "row_mutation", "generation_mutation", "outbox_mutation", "receipt_ledger_mutation",
     ))
@@ -512,9 +596,76 @@ def main():
     assert same_key_candidate["candidate_import_seq"] == adoption["import_seq"]
     assert same_key_candidate["expected"] == "bind_candidate_sequence_and_intent"
     context_case = next(case for case in adoption_cases["phone_candidate_cases"]
-                        if case["id"] == "account-context-mismatch-does-not-promote")
-    assert context_case["candidate_account_id"] != context_case["event_account_id"]
+                        if case["id"] == "receiver-binds-to-current-live-context")
+    assert context_case["event_contains_account_id"] is False
+    assert context_case["binding_source"] == "live_signal_store_aci_device_and_current_instance"
+    assert context_case["stored_export_context_sufficient"] is False
+    assert context_case["current_live_registration_context"] != context_case["candidate_registration_context"]
+    assert context_case["current_live_registration_context"] != context_case["active_v3_registration_context"]
+    assert context_case["both_active_v3_and_candidates_checked"] is True
     assert context_case["expected"] == "no_promotion"
+
+    account_cases = adoption_cases["account_selection_cases"]
+    assert len(account_cases) == 2
+    a_keyed = read_json(V2 / "fixtures/enrollment-keyed.json")
+    for case in account_cases:
+        assert case["existing_account_a"] == {
+            "account_id": a_keyed["account_id"],
+            "source_fixture": "contracts/encrypted-push/v2/fixtures/enrollment-keyed.json",
+            "state": "active",
+            "subscription_epoch": a_keyed["subscription"]["subscription_epoch"],
+            "import_seq": None,
+        }
+        assert case["selected_account_id"] != case["existing_account_a"]["account_id"]
+        assert case["receipt_lookup_scope"] == ["account_id", "request_id"]
+        assert case["server_cross_account_key_guard"] is False
+        assert case["row_comparisons"] == "selected_account_only"
+        assert case["legacy_a_unchanged"] is True
+        selected = validate_enrollment(read_json(ROOT / "fixtures" / case["enrollment_fixture"]))
+        assert selected["account_id"] == case["selected_account_id"]
+        assert selected["request_id"] == case["request_id"]
+        assert case["request_id_state_in_selected_account"] == "unseen"
+        if case["id"] == "independent-account-b-epoch1-create":
+            assert case["selected_row_before"] == "absent"
+            assert selected["subscription"]["subscription_epoch"] == 1
+            assert selected["control_key"] == a_keyed["control_key"]
+            assert case["same_control_key_bytes_as_a"] is True
+            assert case["server_oracle_probe_reuses_key_for_boundary_only"] is True
+            assert case["client_requires_fresh_control_key_for_new_registration"] is True
+            assert case["expected"] == "create_b"
+            independent_response = validate_response(
+                read_json(ROOT / "fixtures" / case["expected_response_fixture"])
+            )
+            assert independent_response["request_id"] == selected["request_id"]
+            assert independent_response["status"] == "accepted"
+            assert independent_response["replayed"] is False
+            assert not ({"import_seq", "import_id", "key_id"} & set(independent_response))
+            b_event = validate_event(read_json(ROOT / "fixtures" / case["expected_event_fixture"]))
+            a_id = derive(
+                a_keyed["control_key"], a_keyed["account_id"], a_keyed["device_id"],
+                a_keyed["subscription"]["instance"],
+            )[2]
+            b_id = derive(
+                selected["control_key"], selected["account_id"], selected["device_id"],
+                selected["subscription"]["instance"],
+            )[2]
+            assert a_id != b_id and b_event["key_id"] == b_id
+            assert b_event["import_id"] == selected["request_id"]
+            assert "account_id" not in b_event and "import_seq" not in b_event
+            assert case["new_b_active_and_claimable"] is True
+            assert case["new_b_enrollment_imported_queued_atomically"] is True
+            assert case["key_id_is_account_context_bound"] is True
+            assert case["shared_secret_compromise_couples_accounts"] is True
+        else:
+            assert case["id"] == "absent-account-b-epoch-above-one-rejected"
+            assert case["selected_row_before"] == "absent"
+            assert selected["subscription"]["subscription_epoch"] > 1
+            assert case["expected"] == "reject"
+            assert validate_error_response(case["expected_response"]) == {"error": "epoch_conflict"}
+            assert case["expected_error_fixture"] == "error-epoch-conflict.json"
+            assert all(case[field] is False for field in (
+                "row_mutation", "generation_mutation", "queue_mutation", "receipt_ledger_mutation",
+            ))
 
     retry_cases = adoption_cases["idempotence_and_status_retry_cases"]
     assert len(retry_cases) == 6
@@ -599,7 +750,28 @@ def main():
         must_reject(lambda b=bad_enrollment: validate_enrollment(b), "invalid import sequence")
     bad_enrollment = dict(enrollment)
     bad_enrollment["subscription"] = dict(enrollment["subscription"], supported_event_versions=[1, 2])
-    must_reject(lambda: validate_enrollment(bad_enrollment), "v3 negotiation")
+    must_reject_with(lambda: validate_enrollment(bad_enrollment), "v3 negotiation", "unsupported_version")
+    precedence = adoption_cases["validation_precedence_cases"]
+    assert len(precedence) == 1
+    precedence_case = precedence[0]
+    assert precedence_case["validation_order"] == ["supported_event_versions", "capabilities"]
+    assert validate_error_response(precedence_case["expected_response"]) == {
+        "error": "unsupported_version",
+    }
+    assert all(precedence_case[field] is False for field in (
+        "row_mutation", "generation_mutation", "queue_mutation", "receipt_ledger_mutation",
+    ))
+    both_invalid = copy.deepcopy(enrollment)
+    both_invalid["subscription"] = dict(
+        enrollment["subscription"],
+        supported_event_versions=precedence_case["supported_event_versions"],
+        capabilities=precedence_case["capabilities"],
+    )
+    must_reject_with(
+        lambda: validate_enrollment(both_invalid),
+        precedence_case["id"],
+        precedence_case["expected_error"],
+    )
     bad_enrollment = dict(enrollment, control_key=enrollment["control_key"] + "=")
     must_reject(lambda: validate_enrollment(bad_enrollment), "padded control key")
     bad_response = dict(response, key_id=key_id)
@@ -618,7 +790,8 @@ def main():
         "stale-sequence-unseen-request-id", "equal-sequence-nonidentical",
         "same-epoch-different-key", "conflicting-repeated-request-id",
         "reaffirm-same-epoch-fresh-id", "delayed-old-same-epoch-event",
-        "old-file-reimport-after-newer-same-epoch", "rerender-existing-no-slot",
+        "old-file-recorded-reimport-after-newer-same-epoch",
+        "old-file-unseen-reimport-after-newer-same-epoch", "rerender-existing-no-slot",
         "restart-retains-pending-intents",
         "legacy-unknown-intent", "explicit-lower-epoch-recovery",
         "lost-status-later-wake", "ordinary-lower-epoch-before-later-candidate",
@@ -627,18 +800,41 @@ def main():
     assert {case["id"] for case in runtime_cases} == required_runtime_cases
     for case in runtime_cases:
         if "expected_error" in case:
-            assert case["expected_response"] == {"error": case["expected_error"]}
-            assert case["row_mutation"] is False
-            assert case["queue_mutation"] is False
-            assert case["receipt_ledger_mutation"] is False
+            assert validate_error_response(case["expected_response"]) == {
+                "error": case["expected_error"],
+            }
+            assert all(case[field] is False for field in (
+                "row_mutation", "generation_mutation", "queue_mutation",
+                "outbox_mutation", "receipt_ledger_mutation",
+            ))
         if case["id"] == "conflicting-repeated-request-id":
             assert case["expected_error"] == "idempotency_conflict"
+        if case["id"] == "old-file-recorded-reimport-after-newer-same-epoch":
+            assert case["receipt_state"] == "recorded_exact"
+            assert case["expected"] == "saved_historical_receipt"
+            historical = validate_response(
+                read_json(ROOT / "fixtures" / case["expected_response_fixture"])
+            )
+            assert historical["request_id"] == case["incoming"]["request_id"]
+            assert historical["status"] == "accepted" and historical["replayed"] is True
+            assert case["replayed"] is True
+            assert case["request_digest_match"] is True
+            assert case["status_retry"] is False
+            assert case["historical_receipt_is_current_confirmation"] is False
+            assert case["row_mutation"] is False and case["queue_mutation"] is False
+            assert case["receipt_ledger_mutation"] is False
+        if case["id"] == "old-file-unseen-reimport-after-newer-same-epoch":
+            assert case["receipt_state"] == "unseen"
+            assert case["expected_error"] == "epoch_conflict"
+            assert case["request_digest_match"] is False
         if case["id"] == "reaffirm-same-epoch-fresh-id":
             assert case["row_state"] == "active" and case["row_claimable"] is True
             assert case["old_queued_work_invalidated"] is True
             assert case["confirmation_queued_atomically"] is True
             assert case["confirmation_claimable"] is True
-    assert all(case["expected"] in {"accept", "reject", "no_promotion", "recover"}
+    assert all(case["expected"] in {
+        "accept", "reject", "no_promotion", "recover", "saved_historical_receipt",
+    }
                for case in runtime_cases)
     assert NEGATIVE_CHECKS > 0
 
@@ -651,6 +847,7 @@ def main():
         "v3_copy_manifest_files": v3_manifest_files,
         "event_fixtures": len(events),
         "schema_valid_fixture_instances": schema_fixture_count,
+        "schema_invalid_fixtures_rejected": schema_invalid_fixture_count,
         "runtime_transition_vectors": len(runtime_cases),
         "first_v3_adoption_mutations_rejected": len(adoption_cases["rejected_adoption_mutations"]),
         "legacy_unkeyed_same_epoch_rejected": 1,

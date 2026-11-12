@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cwa/colliesocket/contracts/encrypted-push/v3/error.schema.json",
+  "title": "Encrypted push enrollment error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "error"
+  ],
+  "properties": {
+    "error": {
+      "type": "string",
+      "enum": [
+        "invalid_json",
+        "input_too_large",
+        "unsafe_file",
+        "invalid_enrollment",
+        "invalid_endpoint",
+        "unsupported_version",
+        "capability_required",
+        "encryption_required",
+        "invalid_key",
+        "idempotency_conflict",
+        "epoch_conflict",
+        "capacity_exceeded",
+        "queue_full",
+        "state_unavailable"
+      ],
+      "description": "A stable redacted error category. Error responses contain no registration, key, sequence, or import identity."
+    }
+  }
+}
