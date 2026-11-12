@@ -34,6 +34,7 @@ jobs:
         run: python3 contracts/encrypted-push/v1/tools/conformance.py
       - name: Enrollment v2 and independent control-frame conformance
         run: python3 contracts/encrypted-push/v2/tools/conformance.py
+      - run: python3 contracts/encrypted-push/v3/tools/conformance.py
       - name: Published vector and independent decryption
         run: |
           cargo +1.90.0 fmt --manifest-path crates/colliesocket-push/Cargo.toml -- --check
