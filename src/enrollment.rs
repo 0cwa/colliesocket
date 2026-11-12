@@ -40,6 +40,21 @@ fn receipt_response(
     response
 }
 
+pub(crate) fn current_v3_replay_status(
+    store: &mut PushStore,
+    enrollment: &Enrollment,
+    receipt: &push_store::EnrollmentResult,
+    now: i64,
+) -> Result<bool, Error> {
+    if enrollment.enrollment_version == 3 && receipt.replayed {
+        store
+            .retry_current_import_status(enrollment, now)
+            .map_err(|error| Error(error.code()))
+    } else {
+        Ok(false)
+    }
+}
+
 pub fn bounded_read(reader: impl Read, limit: u64) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     reader
@@ -116,33 +131,25 @@ pub async fn import(bytes: &[u8]) -> Result<Value, Error> {
         return Err(Error("invalid_enrollment"));
     }
     let mut store = PushStore::open(config::get_db()).map_err(|e| Error(e.code()))?;
-    // A lost receipt can be recovered without DNS and cannot reactivate stale state.
-    let (receipt, current_v3_replay) = match store
+    // A receipt found before DNS avoids network work. A competing import can
+    // still create the same receipt while this request checks DNS, so classify
+    // the final receipt against current state in either path below.
+    let receipt = match store
         .receipt_for(&enrollment)
         .map_err(|e| Error(e.code()))?
     {
-        Some(receipt) => {
-            let current_v3_replay = if enrollment.enrollment_version == 3 {
-                store
-                    .retry_current_import_status(&enrollment, push::now())
-                    .map_err(|e| Error(e.code()))?
-            } else {
-                false
-            };
-            (receipt, current_v3_replay)
-        }
+        Some(receipt) => receipt,
         None => {
             if !config::is_endpoint_valid(&enrollment.subscription.endpoint).await {
                 return Err(Error("invalid_endpoint"));
             }
-            (
-                store
-                    .enroll(&enrollment, push::now())
-                    .map_err(|e| Error(e.code()))?,
-                false,
-            )
+            store
+                .enroll(&enrollment, push::now())
+                .map_err(|e| Error(e.code()))?
         }
     };
+    let current_v3_replay =
+        current_v3_replay_status(&mut store, &enrollment, &receipt, push::now())?;
     Ok(receipt_response(&enrollment, receipt, current_v3_replay))
 }
 

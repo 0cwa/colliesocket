@@ -1404,8 +1404,8 @@ fn ensure_enrollment_confirmation(
     now: i64,
 ) -> Result<()> {
     let pending: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM encrypted_push_queue WHERE account_id=?1 AND subscription_epoch=?2 AND expires_at>?3 AND attempts<4 AND json_extract(event_json,'$.version')=3 AND json_extract(event_json,'$.kind')='status' AND json_extract(event_json,'$.code')='enrollment_imported' AND json_extract(event_json,'$.import_id')=?4 AND json_extract(event_json,'$.key_id')=?5)",
-        params![account_id,event.subscription_epoch as i64,now,event.import_id,event.key_id],
+        "SELECT EXISTS(SELECT 1 FROM encrypted_push_queue WHERE account_id=?1 AND subscription_epoch=?2 AND expires_at>?3 AND (attempts<?4 OR lease_until>?3) AND json_extract(event_json,'$.version')=3 AND json_extract(event_json,'$.kind')='status' AND json_extract(event_json,'$.code')='enrollment_imported' AND json_extract(event_json,'$.import_id')=?5 AND json_extract(event_json,'$.key_id')=?6)",
+        params![account_id,event.subscription_epoch as i64,now,MAX_ATTEMPTS,event.import_id,event.key_id],
         |r| r.get(0),
     )?;
     if pending {
@@ -2195,6 +2195,11 @@ mod tests {
         let mut bad = good.clone();
         bad.subscription.supported_event_versions = vec![1, 2];
         assert_eq!(bad.validate(), Err(StoreError::UnsupportedVersion));
+        let mut bad = good.clone();
+        bad.subscription.capabilities = vec!["wake".into()];
+        assert_eq!(bad.validate(), Err(StoreError::CapabilityRequired));
+        bad.subscription.supported_event_versions = vec![1, 2];
+        assert_eq!(bad.validate(), Err(StoreError::UnsupportedVersion));
         let mut bad = keyed_enrollment();
         bad.import_seq = Some(1);
         assert_eq!(bad.validate(), Err(StoreError::InvalidEnrollment));
@@ -2316,54 +2321,232 @@ mod tests {
 
     #[test]
     fn rejected_first_v3_adoption_mismatches_leave_every_table_unchanged() {
-        for mismatch in 0..6 {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v3/fixtures/first-v3-adoption-cases-v3.json"
+        ))
+        .unwrap();
+        for (index, mismatch) in fixture["rejected_adoption_mutations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            let id = mismatch["id"].as_str().unwrap();
             let dir = TestDir::new();
             let mut store = dir.store();
             let legacy = keyed_enrollment();
             store.enroll(&legacy, NOW).unwrap();
             store.enqueue(ACCOUNT, &event(&legacy, 909), NOW).unwrap();
-            if mismatch == 5 {
-                store
-                    .db
-                    .execute(
-                        "UPDATE encrypted_subscriptions SET state='stale' WHERE account_id=?1",
-                        [ACCOUNT],
-                    )
-                    .unwrap();
-            }
             let before = durable_snapshot(&store);
             let before_generation = private_generation(&store);
-            let old_floor: (Option<String>, Option<i64>) = store
-                .db
-                .query_row(
-                    "SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
-                    [ACCOUNT],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .unwrap();
-            let mut candidate = v3_import_from(&legacy, 910 + mismatch as u64, 20);
-            match mismatch {
-                0 => candidate.subscription.endpoint = "https://other.example.test/token".into(),
-                1 => candidate.control_key = Some(URL_SAFE_NO_PAD.encode([24u8; 32])),
-                2 => candidate.password = "different-synthetic-password".into(),
-                3 => candidate.subscription.instance = "collie:test-2".into(),
-                4 => candidate.subscription.capabilities.swap(0, 1),
-                _ => (),
+            let mut candidate = v3_import_from(&legacy, 910 + index as u64, 20);
+            let value = &mismatch["value"];
+            if mismatch["expected_error"] == "invalid_enrollment" {
+                let mut candidate_json = serde_json::to_value(&candidate).unwrap();
+                *candidate_json
+                    .pointer_mut("/subscription/supported_event_versions")
+                    .unwrap() = value.clone();
+                assert!(
+                    serde_json::from_value::<Enrollment>(candidate_json).is_err(),
+                    "{} must fail strict deserialization",
+                    id
+                );
+                assert_eq!(durable_snapshot(&store), before);
+                assert_eq!(private_generation(&store), before_generation);
+                continue;
             }
-            assert!(store.enroll(&candidate, NOW + 1).is_err());
+            match mismatch["path"].as_str().unwrap() {
+                "subscription.endpoint" => {
+                    candidate.subscription.endpoint = value.as_str().unwrap().into()
+                }
+                "control_key" => candidate.control_key = Some(value.as_str().unwrap().into()),
+                "subscription.p256dh" => {
+                    candidate.subscription.p256dh = value.as_str().unwrap().into()
+                }
+                "subscription.auth" => candidate.subscription.auth = value.as_str().unwrap().into(),
+                "password" => candidate.password = value.as_str().unwrap().into(),
+                "device_id" => candidate.device_id = value.as_u64().unwrap() as u32,
+                "subscription.instance" => {
+                    candidate.subscription.instance = value.as_str().unwrap().into()
+                }
+                "subscription.capabilities" => {
+                    candidate.subscription.capabilities =
+                        serde_json::from_value(value.clone()).unwrap()
+                }
+                "subscription.supported_event_versions" => {
+                    candidate.subscription.supported_event_versions =
+                        serde_json::from_value(value.clone()).unwrap()
+                }
+                path => panic!("unexpected adoption mutation path: {path}"),
+            }
+            let expected = match mismatch["expected_error"].as_str().unwrap() {
+                "epoch_conflict" => StoreError::EpochConflict,
+                "capability_required" => StoreError::CapabilityRequired,
+                "unsupported_version" => StoreError::UnsupportedVersion,
+                error => panic!("unexpected adoption error: {error}"),
+            };
+            assert_eq!(store.enroll(&candidate, NOW + 1), Err(expected), "{}", id);
+            if expected == StoreError::EpochConflict {
+                assert!(store.receipt_for(&candidate).unwrap().is_none());
+            }
             assert_eq!(durable_snapshot(&store), before);
             assert_eq!(private_generation(&store), before_generation);
+        }
+    }
+
+    #[test]
+    fn account_selection_creates_independent_registration_and_requires_epoch_one() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v3/fixtures/first-v3-adoption-cases-v3.json"
+        ))
+        .unwrap();
+        let cases = fixture["account_selection_cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 2);
+
+        for case in cases {
+            let dir = TestDir::new();
+            let mut store = dir.store();
+            let existing_a: Enrollment = serde_json::from_str(include_str!(
+                "../contracts/encrypted-push/v2/fixtures/enrollment-keyed.json"
+            ))
+            .unwrap();
             assert_eq!(
-                store
+                existing_a.account_id,
+                case["existing_account_a"]["account_id"].as_str().unwrap()
+            );
+            store.enroll(&existing_a, NOW).unwrap();
+            store
+                .enqueue(&existing_a.account_id, &event(&existing_a, 919), NOW)
+                .unwrap();
+            let before_a = durable_account_snapshot(&store, &existing_a.account_id);
+            let before = durable_snapshot(&store);
+
+            let enrollment_fixture = match case["id"].as_str().unwrap() {
+                "independent-account-b-epoch1-create" => "enrollment-independent-account-b-v3.json",
+                "absent-account-b-epoch-above-one-rejected" => {
+                    "enrollment-absent-account-b-epoch2-v3.json"
+                }
+                id => panic!("unexpected account-selection vector: {id}"),
+            };
+            let raw = match enrollment_fixture {
+                "enrollment-independent-account-b-v3.json" => include_str!(
+                    "../contracts/encrypted-push/v3/fixtures/enrollment-independent-account-b-v3.json"
+                ),
+                "enrollment-absent-account-b-epoch2-v3.json" => include_str!(
+                    "../contracts/encrypted-push/v3/fixtures/enrollment-absent-account-b-epoch2-v3.json"
+                ),
+                _ => unreachable!(),
+            };
+            let enrollment: Enrollment = serde_json::from_str(raw).unwrap();
+            assert_eq!(
+                enrollment.account_id,
+                case["selected_account_id"].as_str().unwrap()
+            );
+            assert_eq!(enrollment.request_id, case["request_id"].as_str().unwrap());
+            assert_eq!(enrollment.control_key, existing_a.control_key);
+
+            if case["expected"] == "create_b" {
+                let response: serde_json::Value = serde_json::from_str(include_str!(
+                    "../contracts/encrypted-push/v3/fixtures/response-independent-account-b-v3.json"
+                ))
+                .unwrap();
+                let expected_event: Event = serde_json::from_str(include_str!(
+                    "../contracts/encrypted-push/v3/fixtures/event-independent-account-b-v3.json"
+                ))
+                .unwrap();
+                let result = store.enroll(&enrollment, NOW + 1).unwrap();
+                assert!(!result.replayed);
+                assert_eq!(result.disposition, EnrollmentDisposition::Created);
+                assert_eq!(result.subscription_epoch, 1);
+                assert_eq!(response["status"], "accepted");
+                assert_eq!(response["replayed"], false);
+                assert_eq!(response["subscription_epoch"], 1);
+                assert_eq!(
+                    store.get_subscription(&enrollment.account_id).unwrap(),
+                    Some(enrollment.subscription.clone())
+                );
+                let queued_json: String = store
                     .db
                     .query_row(
-                        "SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
-                        [ACCOUNT],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
+                        "SELECT event_json FROM encrypted_push_queue WHERE account_id=?1",
+                        [&enrollment.account_id],
+                        |row| row.get(0),
                     )
-                    .unwrap(),
-                old_floor
+                    .unwrap();
+                let queued: Event = serde_json::from_str(&queued_json).unwrap();
+                assert_eq!(queued.version, expected_event.version);
+                assert_eq!(queued.instance, expected_event.instance);
+                assert_eq!(queued.subscription_epoch, expected_event.subscription_epoch);
+                assert_eq!(queued.key_id, expected_event.key_id);
+                assert_eq!(queued.import_id, expected_event.import_id);
+                assert_eq!(queued.kind, expected_event.kind);
+                assert_eq!(queued.code, expected_event.code);
+                assert_eq!(
+                    durable_account_snapshot(&store, &existing_a.account_id),
+                    before_a
+                );
+                assert_ne!(durable_snapshot(&store), before);
+            } else {
+                assert_eq!(case["expected_error"], "epoch_conflict");
+                assert_eq!(
+                    store.enroll(&enrollment, NOW + 1),
+                    Err(StoreError::EpochConflict)
+                );
+                assert_eq!(durable_snapshot(&store), before);
+                assert_eq!(
+                    durable_account_snapshot(&store, &existing_a.account_id),
+                    before_a
+                );
+                assert!(store.receipt_for(&enrollment).unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn inactive_first_adoption_and_reaffirmation_vectors_are_no_mutation_rejections() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v3/fixtures/first-v3-adoption-cases-v3.json"
+        ))
+        .unwrap();
+        for (index, case) in fixture["inactive_same_epoch_cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            let dir = TestDir::new();
+            let mut store = dir.store();
+            let candidate = match case["operation"].as_str().unwrap() {
+                "first_v3_adoption" => {
+                    let legacy = keyed_enrollment();
+                    store.enroll(&legacy, NOW).unwrap();
+                    v3_import_from(&legacy, 940 + index as u64, 20)
+                }
+                "same_epoch_reaffirmation" => {
+                    let first = v3_enrollment();
+                    store.enroll(&first, NOW).unwrap();
+                    v3_import_from(&first, 940 + index as u64, 2)
+                }
+                operation => panic!("unexpected inactive operation: {operation}"),
+            };
+            store
+                .db
+                .execute(
+                    "UPDATE encrypted_subscriptions SET state=?2 WHERE account_id=?1",
+                    params![ACCOUNT, case["row_state"].as_str().unwrap()],
+                )
+                .unwrap();
+            let before = durable_snapshot(&store);
+            let generation = private_generation(&store);
+            assert_eq!(
+                store.enroll(&candidate, NOW + 1),
+                Err(StoreError::EpochConflict),
+                "{}",
+                case["id"].as_str().unwrap()
             );
+            assert!(store.receipt_for(&candidate).unwrap().is_none());
+            assert_eq!(durable_snapshot(&store), before);
+            assert_eq!(private_generation(&store), generation);
         }
     }
 
@@ -2558,6 +2741,96 @@ mod tests {
     }
 
     #[test]
+    fn enrollment_replay_coalesces_a_live_fourth_lease_and_retries_after_expiry() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let current = v3_enrollment();
+        store.enroll(&current, NOW).unwrap();
+        let generation = private_generation(&store);
+        let mut fourth_claim = None;
+
+        for (index, when) in [NOW, NOW + 5, NOW + 35, NOW + 155].into_iter().enumerate() {
+            let claim = store.claim_due(when).unwrap().unwrap();
+            assert_eq!(claim.attempt, index as u32 + 1);
+            if claim.attempt < MAX_ATTEMPTS {
+                store
+                    .complete(&claim, DeliveryOutcome::Retry { retry_after: None }, when)
+                    .unwrap();
+            } else {
+                fourth_claim = Some(claim);
+            }
+        }
+
+        let fourth_claim = fourth_claim.unwrap();
+        let original_event_id = fourth_claim.event.event_id.clone();
+        let live_lease_until = NOW + 155 + LEASE_SECONDS;
+        let before_live_replay = durable_snapshot(&store);
+        let replay = store.enroll(&current, NOW + 156).unwrap();
+        assert!(replay.replayed);
+        assert!(crate::enrollment::current_v3_replay_status(
+            &mut store,
+            &current,
+            &replay,
+            NOW + 156,
+        )
+        .unwrap());
+        assert_eq!(durable_snapshot(&store), before_live_replay);
+        assert_eq!(private_generation(&store), generation);
+        let leased: (u32, Option<i64>, Option<String>) = store
+            .db
+            .query_row(
+                "SELECT attempts,lease_until,lease_token FROM encrypted_push_queue WHERE event_id=?1",
+                [&original_event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(leased.0, MAX_ATTEMPTS);
+        assert_eq!(leased.1, Some(live_lease_until));
+        assert!(leased.2.is_some());
+        assert_eq!(store.pending_count(Some(ACCOUNT)).unwrap(), 1);
+
+        let retry_after_expiry = store.enroll(&current, live_lease_until).unwrap();
+        assert!(retry_after_expiry.replayed);
+        assert!(crate::enrollment::current_v3_replay_status(
+            &mut store,
+            &current,
+            &retry_after_expiry,
+            live_lease_until,
+        )
+        .unwrap());
+        assert_eq!(private_generation(&store), generation);
+        assert_eq!(store.pending_count(Some(ACCOUNT)).unwrap(), 1);
+        let replacement: (String, u32) = store
+            .db
+            .query_row(
+                "SELECT event_id,attempts FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_ne!(replacement.0, original_event_id);
+        assert_eq!(replacement.1, 0);
+        let retry_rows: usize = store
+            .db
+            .query_row(
+                "SELECT count(*) FROM encrypted_push_event_ids WHERE status_retry_key=?1",
+                [&current.request_id],
+                |row| row_count(row, 0),
+            )
+            .unwrap();
+        assert_eq!(retry_rows, 2);
+        let latest_status_at: i64 = store
+            .db
+            .query_row(
+                "SELECT max(created_at) FROM encrypted_push_event_ids WHERE status_retry_key=?1",
+                [&current.request_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(latest_status_at, live_lease_until);
+    }
+
+    #[test]
     fn a_later_v3_wake_repeats_identity_after_import_status_is_lost() {
         let dir = TestDir::new();
         let mut store = dir.store();
@@ -2680,6 +2953,76 @@ mod tests {
         let current: Event = serde_json::from_str(&current).unwrap();
         assert_eq!(
             current.import_id.as_deref(),
+            Some(second.request_id.as_str())
+        );
+    }
+
+    #[test]
+    fn receipt_created_after_cache_miss_is_classified_as_current_v3_replay() {
+        let dir = TestDir::new();
+        let mut delayed = dir.store();
+        let mut concurrent = dir.store();
+        let enrollment = v3_enrollment();
+
+        // This models the import request's receipt lookup before endpoint DNS.
+        assert!(delayed.receipt_for(&enrollment).unwrap().is_none());
+        assert!(!concurrent.enroll(&enrollment, NOW).unwrap().replayed);
+        let committed = durable_snapshot(&delayed);
+        let generation = private_generation(&delayed);
+
+        // The delayed request resumes after the competing process committed.
+        let receipt = delayed.enroll(&enrollment, NOW + 1).unwrap();
+        assert!(receipt.replayed);
+        assert!(crate::enrollment::current_v3_replay_status(
+            &mut delayed,
+            &enrollment,
+            &receipt,
+            NOW + 1,
+        )
+        .unwrap());
+        assert_eq!(durable_snapshot(&delayed), committed);
+        assert_eq!(private_generation(&delayed), generation);
+        assert_eq!(delayed.pending_count(Some(ACCOUNT)).unwrap(), 1);
+    }
+
+    #[test]
+    fn receipt_created_after_cache_miss_but_superseded_is_historical_and_read_only() {
+        let dir = TestDir::new();
+        let mut delayed = dir.store();
+        let mut concurrent = dir.store();
+        let first = v3_enrollment();
+
+        assert!(delayed.receipt_for(&first).unwrap().is_none());
+        concurrent.enroll(&first, NOW).unwrap();
+        let second = v3_import_from(&first, 928, 2);
+        concurrent.enroll(&second, NOW + 1).unwrap();
+
+        let receipt = delayed.enroll(&first, NOW + 2).unwrap();
+        assert!(receipt.replayed);
+        let before_retry = durable_snapshot(&delayed);
+        let generation = private_generation(&delayed);
+        assert!(!crate::enrollment::current_v3_replay_status(
+            &mut delayed,
+            &first,
+            &receipt,
+            NOW + 2,
+        )
+        .unwrap());
+        assert_eq!(durable_snapshot(&delayed), before_retry);
+        assert_eq!(private_generation(&delayed), generation);
+        assert_eq!(delayed.pending_count(Some(ACCOUNT)).unwrap(), 1);
+
+        let queued: String = delayed
+            .db
+            .query_row(
+                "SELECT event_json FROM encrypted_push_queue WHERE account_id=?1",
+                [ACCOUNT],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let queued: Event = serde_json::from_str(&queued).unwrap();
+        assert_eq!(
+            queued.import_id.as_deref(),
             Some(second.request_id.as_str())
         );
     }
@@ -3365,6 +3708,89 @@ mod tests {
             ("connections", "SELECT * FROM connections ORDER BY rowid"),
             (
                 "encrypted_subscriptions",
+                "SELECT * FROM encrypted_subscriptions ORDER BY rowid",
+            ),
+            (
+                "encrypted_enrollment_requests",
+                "SELECT * FROM encrypted_enrollment_requests ORDER BY rowid",
+            ),
+            (
+                "encrypted_push_queue",
+                "SELECT * FROM encrypted_push_queue ORDER BY rowid",
+            ),
+            (
+                "encrypted_push_event_ids",
+                "SELECT * FROM encrypted_push_event_ids ORDER BY rowid",
+            ),
+            (
+                "encrypted_subscription_generations",
+                "SELECT * FROM encrypted_subscription_generations ORDER BY rowid",
+            ),
+        ]
+        .iter()
+        .map(|(_table, query)| {
+            let mut statement = store.db.prepare(query).unwrap();
+            let rows = statement
+                .query_map([], |row| {
+                    (0..row.as_ref().column_count())
+                        .map(|index| row.get(index))
+                        .collect::<rusqlite::Result<Vec<rusqlite::types::Value>>>()
+                })
+                .unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        })
+        .collect()
+    }
+
+    fn durable_account_snapshot(
+        store: &PushStore,
+        account_id: &str,
+    ) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        [
+            ("connections", "SELECT * FROM connections WHERE uuid=?1"),
+            (
+                "encrypted_subscriptions",
+                "SELECT * FROM encrypted_subscriptions WHERE account_id=?1",
+            ),
+            (
+                "encrypted_enrollment_requests",
+                "SELECT * FROM encrypted_enrollment_requests WHERE account_id=?1",
+            ),
+            (
+                "encrypted_push_queue",
+                "SELECT * FROM encrypted_push_queue WHERE account_id=?1",
+            ),
+            (
+                "encrypted_push_event_ids",
+                "SELECT * FROM encrypted_push_event_ids WHERE account_id=?1",
+            ),
+            (
+                "encrypted_subscription_generations",
+                "SELECT * FROM encrypted_subscription_generations WHERE account_id=?1",
+            ),
+        ]
+        .iter()
+        .map(|(_table, query)| {
+            let mut statement = store.db.prepare(query).unwrap();
+            let rows = statement
+                .query_map([account_id], |row| {
+                    (0..row.as_ref().column_count())
+                        .map(|index| row.get(index))
+                        .collect::<rusqlite::Result<Vec<rusqlite::types::Value>>>()
+                })
+                .unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        })
+        .collect()
+    }
+
+    // This projection intentionally ignores fields introduced in schema v5 so
+    // the schema-3 migration test can compare data that existed on both sides.
+    fn durable_snapshot_pre_v5(store: &PushStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        [
+            ("connections", "SELECT * FROM connections ORDER BY rowid"),
+            (
+                "encrypted_subscriptions",
                 "SELECT account_id,subscription_epoch,subscription_json,state,connection_device_id,connection_password,connection_endpoint,updated_at,control_key,last_control_digest,control_status_at FROM encrypted_subscriptions ORDER BY rowid",
             ),
             (
@@ -3428,7 +3854,7 @@ mod tests {
         v1.account_id = id(900);
         store.enroll(&v1, NOW).unwrap();
         store.enqueue(&v1.account_id, &event(&v1, 91), NOW).unwrap();
-        let mut before = durable_snapshot(&store);
+        let mut before = durable_snapshot_pre_v5(&store);
         before.pop(); // Schema 3 has no generation table.
         store
             .db
@@ -3444,7 +3870,7 @@ mod tests {
         drop(store);
 
         let store = dir.store();
-        let mut after = durable_snapshot(&store);
+        let mut after = durable_snapshot_pre_v5(&store);
         after.pop();
         assert_eq!(after, before);
         assert!(store.receipt_for(&e).unwrap().unwrap().replayed);
