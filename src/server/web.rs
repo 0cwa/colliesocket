@@ -14,7 +14,7 @@ fn index() -> RawHtml<&'static str> {
 #[get("/discover")]
 fn discover() -> Json<Value> {
     Json(
-        json!({"mollysocket":{"version":env!("CARGO_PKG_VERSION")},"colliesocket":{"enrollment":"private_import","enrollment_versions":[1],"event_versions":[1],"encryption_required":true}}),
+        json!({"mollysocket":{"version":env!("CARGO_PKG_VERSION")},"colliesocket":{"enrollment":"private_import","enrollment_versions":[1,2,3],"event_versions":[1,2,3],"encryption_required":true}}),
     )
 }
 pub async fn launch() -> Result<(), &'static str> {
