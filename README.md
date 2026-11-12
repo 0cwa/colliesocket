@@ -42,8 +42,16 @@ device password, endpoint and control key. Keyed v2 enrollments advertise event
 versions `[1,2]` and receive version-2 encrypted pushes. Existing version-1
 imports and version-2 imports without a control key retain version-1 behavior.
 Upgrading an existing enrollment requires a new private import at the next
-subscription epoch. Database migration to schema 3 is automatic; an older
-server must use a pre-upgrade backup, not the migrated database.
+subscription epoch. Database migration to schema 4 is automatic. Before
+upgrading, stop the service and back up its private database. Older binaries
+reject the migrated database; rollback requires the older binary and its
+matching pre-upgrade backup. Keep the latest database for recovery because
+restoring a backup discards later enrollment and queue changes.
+
+Every state-changing private import also replaces an internal enrollment
+generation. This revokes callbacks from older Signal sockets, even if the
+password and endpoint are unchanged or later return to earlier values. Signal
+endpoint updates and idempotent imports retain that generation.
 
 For later endpoint or key changes, the phone sends a dedicated non-urgent sync
 message to its own account. Only the CollieSocket device's copy contains the

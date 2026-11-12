@@ -7,6 +7,7 @@ use crate::{
 use colliesocket_push::SubscriptionKeys;
 use serde_json::{json, Value};
 use std::{
+    future::Future,
     sync::atomic::{AtomicI64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -73,6 +74,7 @@ pub fn enrolled(account: &str) -> Result<bool, &'static str> {
 }
 pub fn enqueue_for_connection(
     co: &crate::db::Connection,
+    expected_generation: &str,
     kind: &str,
     code: Option<&str>,
 ) -> Result<bool, &'static str> {
@@ -81,14 +83,20 @@ pub fn enqueue_for_connection(
     }
     let mut store = PushStore::open(config::get_db()).map_err(|e| e.code())?;
     let Some(sub) = store
-        .subscription_for_connection(&co.uuid, co.device_id, &co.password, &co.endpoint)
+        .subscription_for_connection(
+            &co.uuid,
+            co.device_id,
+            &co.password,
+            &co.endpoint,
+            expected_generation,
+        )
         .map_err(|e| e.code())?
     else {
         return Ok(false);
     };
     // Preserve this exact snapshot through enqueue's transactional epoch check.
     let event = new_event(&sub, kind, code)?;
-    match store.enqueue(&co.uuid, &event, event.issued_at) {
+    match store.enqueue_for_connection(co, expected_generation, &event, event.issued_at) {
         Ok(queued) => Ok(queued),
         Err(
             StoreError::EpochConflict
@@ -98,15 +106,27 @@ pub fn enqueue_for_connection(
         Err(e) => Err(e.code()),
     }
 }
-pub fn legacy_connection_is_current(co: &crate::db::Connection) -> Result<bool, &'static str> {
+/// Run legacy websocket/CLI wakes under the same cross-process import fence.
+/// The callback timeout bounds how long this SQLite database's writer is held.
+pub(crate) async fn with_legacy_dispatch<F, Fut, T>(
+    co: &crate::db::Connection,
+    dispatch: F,
+) -> Result<Option<T>, &'static str>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = T>,
+{
     if !config::legacy_wake_enabled() || !config::is_uuid_valid(&co.uuid) {
-        return Ok(false);
+        return Ok(None);
     }
-    PushStore::open(config::get_db())
-        .and_then(|s| {
-            s.legacy_connection_is_current(&co.uuid, co.device_id, &co.password, &co.endpoint)
-        })
-        .map_err(|e| e.code())
+    let mut store = PushStore::open(config::get_db()).map_err(|e| e.code())?;
+    let guarded = tokio::time::timeout(
+        crate::push_store::LEGACY_DISPATCH_TIMEOUT,
+        store.with_legacy_dispatch(co, dispatch),
+    )
+    .await
+    .map_err(|_| "state_unavailable")?;
+    guarded.map_err(|e| e.code())
 }
 pub fn response_outcome(status: u16, retry_after: Option<&str>) -> DeliveryOutcome {
     match status {

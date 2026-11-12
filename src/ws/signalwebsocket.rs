@@ -80,6 +80,9 @@ pub struct SignalWebSocket {
     // A control update keeps Signal credentials but changes the endpoint used
     // by this socket's exact-tuple guard before the next message is processed.
     current_endpoint: Mutex<String>,
+    // Captured before connecting and never refreshed from an incoming message.
+    // Private imports replace it; control updates only replace the endpoint.
+    private_generation: Option<String>,
     encrypted_mode: bool,
     creds: String,
     push_endpoint: url::Url,
@@ -125,7 +128,11 @@ impl SignalWebSocket {
         password: &str,
         raw_endpoint: &str,
         encrypted_mode: bool,
+        private_generation: Option<String>,
     ) -> Result<Self> {
+        if encrypted_mode != private_generation.is_some() {
+            return Err(eyre!("invalid_connection_generation"));
+        }
         let push_endpoint = url::Url::parse(raw_endpoint).map_err(|_| eyre!("invalid_endpoint"))?;
         let now = Instant::now();
         Ok(Self {
@@ -138,6 +145,7 @@ impl SignalWebSocket {
                 raw_endpoint.to_owned(),
             ),
             current_endpoint: Mutex::new(raw_endpoint.to_owned()),
+            private_generation,
             encrypted_mode,
             creds: format!("{uuid}.{device_id}:{password}"),
             push_endpoint,
@@ -258,8 +266,11 @@ impl SignalWebSocket {
             return Ok(());
         }
         let co = self.current_connection()?;
+        let Some(generation) = self.private_generation.as_deref() else {
+            return Ok(());
+        };
         let context = PushStore::open(config::get_db())
-            .and_then(|store| store.control_context_for_connection(&co))
+            .and_then(|store| store.control_context_for_connection(&co, generation))
             .map_err(|_| eyre!("control_state_unavailable"))?;
         let Some(context) = context else {
             return Ok(());
@@ -283,6 +294,7 @@ impl SignalWebSocket {
         let result = PushStore::open(config::get_db()).and_then(|mut store| {
             store.apply_endpoint_update(
                 &co,
+                generation,
                 &context.control_key,
                 &subscription,
                 &update.digest,
@@ -339,17 +351,24 @@ impl SignalWebSocket {
         let attempted = if self.encrypted_mode {
             // The guard atomically verifies the original connection tuple before
             // enqueueing. False means this socket is obsolete; never downgrade.
-            push::enqueue_for_connection(&self.current_connection()?, "wake", None)
-                .map_err(|_| eyre!("push_enqueue_failed"))?
-        } else if config::legacy_wake_enabled()
-            && push::legacy_connection_is_current(&self.original)
-                .map_err(|_| eyre!("state_unavailable"))?
-        {
-            // Response codes have no authority over Signal device linkage.
-            let _ = post_allowed::post_legacy_wake(self.push_endpoint.clone()).await;
-            true
+            push::enqueue_for_connection(
+                &self.current_connection()?,
+                self.private_generation
+                    .as_deref()
+                    .ok_or_else(|| eyre!("state_unavailable"))?,
+                "wake",
+                None,
+            )
+            .map_err(|_| eyre!("push_enqueue_failed"))?
         } else {
-            false
+            // Keep the legacy authorization and bounded provider request in
+            // one SQLite writer transaction, shared with encrypted imports.
+            push::with_legacy_dispatch(&self.original, || {
+                post_allowed::post_legacy_wake(self.push_endpoint.clone())
+            })
+            .await
+            .map_err(|_| eyre!("state_unavailable"))?
+            .is_some()
         };
         if attempted {
             metric_tick(&self.channels.on_push_tx);
@@ -373,6 +392,9 @@ impl SignalWebSocket {
         }
         let _ = push::enqueue_for_connection(
             &self.current_connection()?,
+            self.private_generation
+                .as_deref()
+                .ok_or_else(|| eyre!("state_unavailable"))?,
             "status",
             Some("connection_conflict"),
         )
@@ -407,6 +429,7 @@ mod tests {
             "synthetic-password-only",
             "https://push.example.test/synthetic",
             true,
+            Some("synthetic-generation".into()),
         )
         .unwrap();
         let (sender, receiver) = websocket_mpsc::channel(64);
@@ -427,11 +450,25 @@ mod tests {
     #[test]
     fn immutable_mode_and_exact_raw_endpoint_are_preserved() {
         let raw = "https://EXAMPLE.test:443";
-        let connection =
-            SignalWebSocket::new("synthetic-id", 2, "synthetic-password", raw, true).unwrap();
+        let connection = SignalWebSocket::new(
+            "synthetic-id",
+            2,
+            "synthetic-password",
+            raw,
+            true,
+            Some("synthetic-generation".into()),
+        )
+        .unwrap();
         assert_eq!(connection.original.endpoint, raw);
         assert_ne!(connection.push_endpoint.as_str(), raw);
         assert!(connection.encrypted_mode);
+        assert_eq!(
+            connection.private_generation.as_deref(),
+            Some("synthetic-generation")
+        );
+        assert!(
+            SignalWebSocket::new("synthetic-id", 2, "synthetic-password", raw, true, None).is_err()
+        );
     }
 
     #[tokio::test]
