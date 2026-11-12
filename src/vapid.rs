@@ -15,6 +15,7 @@ use jwt_simple::{
 };
 use lazy_static::lazy_static;
 use openssl::{
+    bn::BigNumRef,
     ec::{EcGroup, EcKey},
     nid::Nid,
 };
@@ -29,6 +30,7 @@ lazy_static! {
 
 const DURATION_VAPID: u64 = 4500; /* 1h15 */
 const DURATION_VAPID_CACHE: u64 = 3600; /* 1h */
+const VAPID_PRIVATE_KEY_SIZE: i32 = 32;
 
 /**
 Wrapper containing the signer and the associated public key.
@@ -139,7 +141,7 @@ fn get_signer(private_bytes: &str) -> Result<SignerWithPubKey> {
         .decode(private_bytes)
         .map_err(|_| Error::VapidKeyError)?;
     let size = private_key_bytes.len();
-    if size != 32 {
+    if size != VAPID_PRIVATE_KEY_SIZE as usize {
         if size == 0 {
             log::warn!("No VAPID key was provided.")
         } else {
@@ -161,13 +163,25 @@ Generate a new VAPID key.
 */
 pub fn gen_vapid_key() -> String {
     let key = EcKey::generate(&EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap());
-    URL_SAFE_NO_PAD.encode(key.unwrap().private_key().to_vec())
+    encode_vapid_private_key(key.unwrap().private_key())
+}
+
+fn encode_vapid_private_key(private_key: &BigNumRef) -> String {
+    URL_SAFE_NO_PAD.encode(
+        private_key
+            .to_vec_padded(VAPID_PRIVATE_KEY_SIZE)
+            .expect("P-256 private key scalar must fit in 32 bytes"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
+    use openssl::{
+        bn::{BigNum, BigNumContext},
+        ec::EcPoint,
+    };
 
     const TEST_PRIVKEY: &str = "DSqYuWchrB6yIMYJtidvqANeRQic4uWy34afzZRsZnI";
     const TEST_PUBKEY: &str =
@@ -187,6 +201,36 @@ mod tests {
     #[test]
     fn test_gen_vapid_key() {
         assert_eq!(get_signer(&gen_vapid_key()).unwrap().pubkey.len(), 87);
+    }
+
+    #[test]
+    fn test_gen_vapid_key_fixed_width_low_scalar() {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let mut private_bytes = [0xff; 32];
+        private_bytes[0] = 0;
+        let private_key = BigNum::from_slice(&private_bytes).unwrap();
+        assert_eq!(private_key.to_vec().len(), 31);
+
+        let mut public_key = EcPoint::new(&group).unwrap();
+        let context = BigNumContext::new().unwrap();
+        public_key
+            .mul_generator(&group, &private_key, &context)
+            .unwrap();
+        let key = EcKey::from_private_components(&group, &private_key, &public_key).unwrap();
+        key.check_key().unwrap();
+
+        let encoded = encode_vapid_private_key(key.private_key());
+        let decoded = URL_SAFE_NO_PAD.decode(&encoded).unwrap();
+        assert_eq!(decoded, private_bytes);
+        assert_eq!(URL_SAFE_NO_PAD.encode(&decoded), encoded);
+
+        let signer = get_signer(&encoded).unwrap();
+        let origin = url::Url::parse("https://fixed-width.example")
+            .unwrap()
+            .origin();
+        let header = gen_vapid_header_with_key(origin, &signer).unwrap();
+        assert!(header.starts_with("vapid t="));
+        assert!(header.ends_with(&format!(",k={}", signer.pubkey)));
     }
 
     /**
