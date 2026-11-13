@@ -37,7 +37,7 @@ jobs:
           cargo install cargo-fuzz --version 0.12.0 --locked
       - name: Restore scheduled discovery corpus
         if: github.event_name == 'schedule'
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ${{ runner.temp }}/colliesocket-fuzz-cache
           key: colliesocket-fuzz-${{ runner.os }}-${{ github.run_id }}
