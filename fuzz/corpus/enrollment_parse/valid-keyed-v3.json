@@ -1,0 +1,27 @@
+{
+  "enrollment_version": 3,
+  "request_id": "22222222-2222-4222-8222-222222222222",
+  "import_seq": 1,
+  "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "device_id": 2,
+  "password": "SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL",
+  "subscription": {
+    "endpoint": "https://push.example.invalid/synthetic-endpoint",
+    "p256dh": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+    "auth": "BTBZMqHH6r4Tts7J_aSIgg",
+    "instance": "fixture-instance",
+    "subscription_epoch": 1,
+    "encryption_required": true,
+    "supported_event_versions": [
+      1,
+      2,
+      3
+    ],
+    "capabilities": [
+      "wake",
+      "test",
+      "status"
+    ]
+  },
+  "control_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+}

@@ -1,0 +1,95 @@
+name: Advisory security fuzzing pilot
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact branch, tag, or commit to fuzz
+        required: true
+        default: main
+        type: string
+  schedule:
+    - cron: '27 4 * * 2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: colliesocket-security-fuzz-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Exact-source bounded fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Install pinned Rust and fuzz engine
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal --component rustfmt
+          rustup toolchain install nightly-2025-09-15 --profile minimal
+          cargo install cargo-fuzz --version 0.12.0 --locked
+      - name: Restore scheduled discovery corpus
+        if: github.event_name == 'schedule'
+        uses: actions/cache@0c45773b623bea8c8e75f6c82f208c3cf94ea4f9
+        with:
+          path: ${{ runner.temp }}/colliesocket-fuzz-cache
+          key: colliesocket-fuzz-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            colliesocket-fuzz-${{ runner.os }}-
+      - name: Check deterministic fixture and sequence tests
+        run: |
+          cargo +1.90.0 fmt -- --check
+          cargo +1.90.0 fmt --manifest-path fuzz/Cargo.toml -- --check
+          cargo +1.90.0 metadata --manifest-path fuzz/Cargo.toml --locked --no-deps > /dev/null
+          cargo +1.90.0 test --locked
+      - name: Run bounded fuzz targets
+        env:
+          FUZZ_CACHE: ${{ runner.temp }}/colliesocket-fuzz-cache
+          FUZZ_EVIDENCE: ${{ runner.temp }}/colliesocket-fuzz-evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$FUZZ_CACHE"/{enrollment_parse,control_raw,control_authenticated} "$FUZZ_EVIDENCE"
+          source_sha=$(git rev-parse HEAD)
+          cargo fuzz --version > "$FUZZ_EVIDENCE/tool-version.txt"
+          overall=0
+          for target in enrollment_parse control_raw control_authenticated; do
+            started=$(date +%s)
+            seed_count=$(find "fuzz/corpus/$target" -type f | wc -l)
+            cache_before=$(find "$FUZZ_CACHE/$target" -type f | wc -l)
+            if cargo +nightly-2025-09-15 fuzz run "$target" \
+              "$FUZZ_CACHE/$target" "fuzz/corpus/$target" -- \
+              -max_total_time=60 -timeout=5 -rss_limit_mb=2048 -max_len=8192 \
+              > "$FUZZ_EVIDENCE/$target.log" 2>&1; then
+              result=0
+            else
+              result=$?
+            fi
+            duration=$(( $(date +%s) - started ))
+            cache_count=$(find "$FUZZ_CACHE/$target" -type f | wc -l)
+            cache_delta=$(( cache_count - cache_before ))
+            if [[ $result -eq 0 ]] && { ! grep -Eq '#[0-9]+[[:space:]]+DONE[[:space:]]+cov: [1-9][0-9]*.*exec/s: [1-9][0-9]*' "$FUZZ_EVIDENCE/$target.log" || [[ $cache_delta -le 0 ]]; }; then
+              result=1
+            fi
+            printf 'source_sha=%s\ntarget=%s\nresult=%s\nduration_seconds=%s\nseed_files=%s\ndiscovery_cache_before=%s\ndiscovery_cache_after=%s\ndiscovery_cache_new=%s\ncommand=cargo +nightly-2025-09-15 fuzz run %s %s fuzz/corpus/%s -- -max_total_time=60 -timeout=5 -rss_limit_mb=2048 -max_len=8192\n' \
+              "$source_sha" "$target" "$result" "$duration" "$seed_count" "$cache_before" "$cache_count" "$cache_delta" "$target" "$FUZZ_CACHE/$target" "$target" > "$FUZZ_EVIDENCE/$target.txt"
+            [[ $result -eq 0 ]] || overall=1
+          done
+          exit "$overall"
+      - name: Preserve fuzz crashes and reproduction metadata
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: colliesocket-fuzz-${{ github.event.pull_request.head.sha || inputs.ref || github.sha }}
+          path: |
+            ${{ runner.temp }}/colliesocket-fuzz-evidence
+            fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 7

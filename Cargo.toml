@@ -14,6 +14,8 @@ build = "src/build_test_signal.rs"
 # Local integration tests only. The build script also requires a debug profile;
 # release builds have no overrides even with all features and debug assertions.
 test-signal = []
+# Narrow entry points for the isolated cargo-fuzz workspace only.
+fuzzing = []
 
 [profile.release]
 strip = true  # Automatically strip symbols from the binary.

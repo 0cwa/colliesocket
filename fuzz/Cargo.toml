@@ -1,0 +1,37 @@
+[package]
+name = "mollysocket-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.10"
+mollysocket = { path = "..", features = ["fuzzing"] }
+
+[workspace]
+members = ["."]
+resolver = "2"
+
+[[bin]]
+name = "enrollment_parse"
+path = "fuzz_targets/enrollment_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control_raw"
+path = "fuzz_targets/control_raw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control_authenticated"
+path = "fuzz_targets/control_authenticated.rs"
+test = false
+doc = false
+bench = false

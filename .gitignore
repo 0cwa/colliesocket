@@ -1,6 +1,8 @@
 /target
 **/target/
 **/__pycache__/
+/fuzz/artifacts/
+/fuzz/coverage/
 /tmp
 mollysocket.db
 *.sqlite-journal
