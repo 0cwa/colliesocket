@@ -51,11 +51,12 @@ def event_key_id(enrollment):
 class SignalHarness(Harness):
     """Trace synthetic envelopes through the real worker to independently decrypted pushes."""
 
-    def start_signal_worker(self, signal, ca_path=None):
+    def start_signal_worker(self, signal, ca_path=None, legacy_wake_until=0):
         """Launch the real worker against the fake WSS peer with captured trace logs."""
         config = self.make_config(
             push_only=False, webserver=False, ready_port=fresh_port(),
             test_signal_url=signal.url, test_signal_ca=str(ca_path or signal.ca_path),
+            legacy_wake_until=legacy_wake_until,
         )
         stdout = (self.directory / f"worker-{self.config_serial}.stdout").open("w+b")
         stderr = (self.directory / f"worker-{self.config_serial}.stderr").open("w+b")
@@ -98,7 +99,7 @@ class SignalHarness(Harness):
         # hide an incorrectly enqueued event by discarding it before inspection.
         require(self.event_ids() == previous, "non-waking input recorded a durable event ID")
 
-    def send_wake(self, signal, envelope, request_id=None):
+    def send_wake(self, signal, envelope, request_id=None, accepted=True):
         """Correlate one envelope with one new ledger ID and its decrypted provider event."""
         previous = self.event_ids()
         sent_at = int(time.time())
@@ -107,11 +108,11 @@ class SignalHarness(Harness):
         created = self.event_ids() - previous
         require(len(created) == 1, "Signal envelope did not record exactly one new durable event")
         event_id = created.pop()
-        return event_id, self.capture_signal_wake(sent_at, event_id)
+        return event_id, self.capture_signal_wake(sent_at, event_id, accepted=accepted)
 
-    def capture_signal_wake(self, sent_at, expected_event_id):
+    def capture_signal_wake(self, sent_at, expected_event_id, accepted=True):
         """Verify encrypted transport, v1 event fields and bounded provider acceptance."""
-        path, headers, body = self.provider.take(timeout=5)
+        path, headers, body = self.provider.take(timeout=8)
         require(path == ENDPOINT_PATH, "Signal wake reached the wrong provider endpoint")
         require(len(body) == 4096, "Signal wake is not a fixed-size encrypted push")
         require(headers.get("content-type") == "application/octet-stream", "Signal wake lacks binary media type")
@@ -150,11 +151,12 @@ class SignalHarness(Harness):
                 "wake timestamp is outside the Signal envelope delivery window")
         require(event["expires_at"] - event["issued_at"] == 300,
                 "Signal wake lifetime differs from the contract")
-        deadline = time.monotonic() + 5
-        while self.queued() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        require(self.queued() == 0 and self.current()["state"] == "active",
-                "provider acceptance did not finish the encrypted wake attempt")
+        if accepted:
+            deadline = time.monotonic() + 5
+            while self.queued() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            require(self.queued() == 0 and self.current()["state"] == "active",
+                    "provider acceptance did not finish the encrypted wake attempt")
         return body
 
     def capture_v3_provider_request(
@@ -332,6 +334,53 @@ class SignalHarness(Harness):
             finally:
                 self.stop_worker()
 
+    def provider_failure_cases(self):
+        """Exercise failures in a separate enrollment so stale state does not affect other cases."""
+        self.stage = "provider failure fixture enrollment"
+        self.import_value(self.enrollment)
+        credentials = f"{ACCOUNT}.{self.enrollment['device_id']}:{PASSWORD}"
+        with FakeSignal(self.directory / "signal-tls", credentials) as signal:
+            try:
+                self.start_signal_worker(signal, legacy_wake_until=int(time.time()) + 3600)
+                signal.wait_connected()
+                self.stage = "Signal-originated provider retry"
+                original_connections = self.rows("SELECT * FROM connections WHERE uuid=?", (ACCOUNT,))
+                self.provider.statuses.put(503)
+                sent_at = int(time.time())
+                retry_id, first_attempt = self.send_wake(
+                    signal, signal_envelope(urgent=True), accepted=False
+                )
+                ledger = self.event_ids()
+                retried = self.capture_signal_wake(sent_at, retry_id)
+                require(self.checker.decrypt(first_attempt, self.private, self.auth)
+                        == self.checker.decrypt(retried, self.private, self.auth),
+                        "provider retry changed the encrypted event plaintext")
+                require(first_attempt[:16] != retried[:16]
+                        and first_attempt[21:86] != retried[21:86],
+                        "provider retry reused encryption salt or sender key")
+                require(self.event_ids() == ledger
+                        and self.rows("SELECT * FROM connections WHERE uuid=?", (ACCOUNT,)) == original_connections,
+                        "provider retry created another event or changed Signal credentials")
+                self.mark("Signal wake receives HTTP 503 then retries the same event with fresh encryption material")
+                self.require_no_push()
+
+                self.stage = "Signal-originated stale provider and suppression"
+                self.provider.statuses.put(410)
+                self.send_wake(signal, signal_envelope(urgent=True), accepted=False)
+                deadline = time.monotonic() + 5
+                while (self.current()["state"] != "stale" or self.queued()) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                require(self.current()["state"] == "stale" and self.queued() == 0,
+                        "HTTP 410 did not stale the subscription and clear its queue")
+                # Wait beyond the wake throttle so suppression cannot be explained by it.
+                self.require_no_push()
+                self.require_suppressed(signal, signal_envelope(urgent=True))
+                require(self.rows("SELECT * FROM connections WHERE uuid=?", (ACCOUNT,)) == original_connections,
+                        "HTTP 410 changed Signal credentials")
+                self.mark("HTTP 410 stales the subscription; a later urgent Signal envelope has no encrypted or plaintext fallback")
+            finally:
+                self.stop_worker()
+
     def run(self):
         """Exercise dispatch, suppression, TLS verification and redaction with synthetic peers."""
         self.stage = "test-signal build preflight (cargo build --locked --features test-signal)"
@@ -376,6 +425,7 @@ class SignalHarness(Harness):
                         "separate Signal wakes reused event ID, encryption salt or sender key")
                 self.mark("omitted urgent field preserves proto2 default true with a fresh encrypted wake")
                 self.require_no_push()
+
             finally:
                 self.stop_worker()
 
@@ -402,6 +452,16 @@ class SignalHarness(Harness):
                 self.stop_worker()
 
         self.v3_private_import_and_worker_events()
+
+        failure_directory = self.directory / "provider-failures"
+        failure_directory.mkdir(mode=0o700)
+        failures = SignalHarness(failure_directory, self.binary, self.provider, self.checker, self.metadata)
+        try:
+            failures.provider_failure_cases()
+        finally:
+            self.stage = failures.stage
+            self.checks.extend(failures.checks)
+            self.outputs.extend(failures.outputs)
 
         self.stage = "Signal transport log redaction"
         joined = b"\n".join(self.outputs)
