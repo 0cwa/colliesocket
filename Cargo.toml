@@ -14,6 +14,8 @@ build = "src/build_test_signal.rs"
 # Local integration tests only. The build script also requires a debug profile;
 # release builds have no overrides even with all features and debug assertions.
 test-signal = []
+# Narrow entry points for the isolated cargo-fuzz workspace only.
+fuzzing = []
 
 [profile.release]
 strip = true  # Automatically strip symbols from the binary.
@@ -56,6 +58,9 @@ qrcodegen = "1.8.0"
 base64 = "0.22.1"
 openssl = "0.10.75"
 jwt-simple = { version = "0.12.14", default-features = false, features = ["pure-rust"] }
+
+[dev-dependencies]
+proptest = "=1.7.0"
 
 # [build-dependencies]
 # prost-build = { version = "0.12" }

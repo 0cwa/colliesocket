@@ -88,7 +88,7 @@ pub fn decrypt(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 pub mod tests {
     use super::*;
     use openssl::symm::encrypt_aead;
@@ -102,8 +102,10 @@ pub mod tests {
         header.extend_from_slice(&account_bytes(account).unwrap());
         header.extend_from_slice(&device.to_be_bytes());
         header.extend_from_slice(&epoch.to_be_bytes());
-        let mut nonce = [0; 12];
-        openssl::rand::rand_bytes(&mut nonce).unwrap();
+        // This helper is compiled only for tests and the fuzzing feature; the
+        // fixed synthetic key makes a content-derived nonce reproducible.
+        let digest = openssl::sha::sha256(&[header.as_slice(), plaintext].concat());
+        let nonce: [u8; 12] = digest[..12].try_into().unwrap();
         let mut tag = [0; TAG_BYTES];
         let ciphertext = encrypt_aead(
             Cipher::aes_256_gcm(),
@@ -129,6 +131,18 @@ pub mod tests {
         let frame = URL_SAFE_NO_PAD
             .decode(fixture["frame_base64url"].as_str().unwrap())
             .unwrap();
+        let empty_seed = include_bytes!("../fuzz/corpus/control_raw/empty.bin");
+        assert!(decrypt(
+            empty_seed,
+            fixture["account_id"].as_str().unwrap(),
+            fixture["device_id"].as_u64().unwrap() as u32,
+            fixture["control_key"].as_str().unwrap(),
+        )
+        .is_none());
+        assert_eq!(
+            frame.as_slice(),
+            include_bytes!("../fuzz/corpus/control_raw/v2-frame.bin")
+        );
         let update = decrypt(
             &frame,
             fixture["account_id"].as_str().unwrap(),
@@ -148,8 +162,22 @@ pub mod tests {
     }
 
     #[test]
+    fn fuzz_corpora_replay_through_production_control_decoder() {
+        crate::fuzz_api::replay_committed_corpus("control_raw", |bytes| {
+            crate::fuzz_api::decrypt_raw_control_frame(bytes);
+        });
+        crate::fuzz_api::replay_committed_corpus("control_authenticated", |bytes| {
+            crate::fuzz_api::exercise_authenticated_control_input(bytes);
+        });
+    }
+
+    #[test]
     fn authenticates_context_and_every_encrypted_byte() {
-        let body = br#"{"endpoint":"https://push.example.test/new","p256dh":"synthetic","auth":"synthetic"}"#;
+        let seed = include_bytes!(
+            "../fuzz/corpus/control_authenticated/valid-prefixed-endpoint-update.bin"
+        );
+        assert_eq!(seed[0], 0);
+        let body = &seed[1..];
         let frame = frame_for(ACCOUNT, 2, 3, body);
         let key = URL_SAFE_NO_PAD.encode(KEY);
         let decoded = decrypt(&frame, ACCOUNT, 2, &key).unwrap();
@@ -193,6 +221,18 @@ pub mod tests {
             2,
             br#"{"endpoint":"x","p256dh":"p","auth":"a"}"#,
         );
+        let oversized_json = format!(
+            r#"{{"endpoint":"{}","p256dh":"p","auth":"a"}}"#,
+            "x".repeat(MAX_PLAINTEXT_BYTES)
+        );
+        assert!(oversized_json.len() > MAX_PLAINTEXT_BYTES);
+        assert!(decrypt(
+            &frame_for(ACCOUNT, 2, 2, oversized_json.as_bytes()),
+            ACCOUNT,
+            2,
+            &key
+        )
+        .is_none());
         for size in 0..frame.len() {
             assert!(decrypt(&frame[..size], ACCOUNT, 2, &key).is_none());
         }

@@ -1931,12 +1931,67 @@ mod tests {
         next
     }
 
+    fn server_seed_v3_from_template(
+        store: &mut PushStore,
+        template: &Enrollment,
+        epoch: u64,
+        sequence: u64,
+        final_request_id: Option<&str>,
+    ) -> Enrollment {
+        assert!(epoch >= 1 && sequence >= epoch);
+        let base_request = if epoch == 1 {
+            final_request_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| id(20_000))
+        } else {
+            id(20_000)
+        };
+        let mut current = v3_import_from(template, 20_000, sequence - epoch + 1);
+        current.request_id = base_request;
+        current.subscription.subscription_epoch = 1;
+        if epoch > 1 {
+            current.control_key = Some(URL_SAFE_NO_PAD.encode([21; 32]));
+        }
+        store.enroll(&current, NOW).unwrap();
+        for next_epoch in 2..=epoch {
+            current = v3_import_from(&current, 20_000 + next_epoch, sequence - epoch + next_epoch);
+            if next_epoch == epoch {
+                if let Some(request_id) = final_request_id {
+                    current.request_id = request_id.to_owned();
+                }
+            }
+            current.subscription.subscription_epoch = next_epoch;
+            current.control_key = Some(URL_SAFE_NO_PAD.encode([next_epoch as u8 + 30; 32]));
+            if next_epoch == epoch {
+                current.control_key = template.control_key.clone();
+                current.subscription = template.subscription.clone();
+                current.subscription.subscription_epoch = next_epoch;
+            }
+            store
+                .enroll(&current, NOW + next_epoch as i64)
+                .unwrap_or_else(|error| panic!("fixture seed epoch {next_epoch}: {error:?}"));
+        }
+        current
+    }
+
+    fn server_seed_v3(
+        store: &mut PushStore,
+        epoch: u64,
+        sequence: u64,
+        final_request_id: Option<&str>,
+    ) -> Enrollment {
+        server_seed_v3_from_template(store, &v3_enrollment(), epoch, sequence, final_request_id)
+    }
+
     fn private_generation(store: &PushStore) -> String {
+        private_generation_for(store, ACCOUNT)
+    }
+    fn private_generation_for(store: &PushStore, account_id: &str) -> String {
         store
             .db
             .query_row(
                 "SELECT generation FROM encrypted_subscription_generations WHERE account_id=?1",
-                [ACCOUNT],
+                [account_id],
                 |r| r.get(0),
             )
             .unwrap()
@@ -2259,25 +2314,47 @@ mod tests {
     fn keyed_legacy_row_adopts_v3_at_the_same_epoch_and_queues_bound_status() {
         let dir = TestDir::new();
         let mut store = dir.store();
-        let legacy = keyed_enrollment();
+        let legacy = crate::enrollment::parse(include_bytes!(
+            "../contracts/encrypted-push/v2/fixtures/enrollment-keyed.json"
+        ))
+        .unwrap();
         store.enroll(&legacy, NOW).unwrap();
-        store.enqueue(ACCOUNT, &event(&legacy, 903), NOW).unwrap();
-        let old_generation = private_generation(&store);
+        store
+            .enqueue(&legacy.account_id, &event(&legacy, 903), NOW)
+            .unwrap();
+        let old_generation = private_generation_for(&store, &legacy.account_id);
 
-        let adoption = v3_import_from(&legacy, 904, 17);
+        let adoption = crate::enrollment::parse(include_bytes!(
+            "../contracts/encrypted-push/v3/fixtures/enrollment-first-v3-adoption-v3.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            adoption.subscription.subscription_epoch,
+            legacy.subscription.subscription_epoch
+        );
+        assert_eq!(adoption.control_key, legacy.control_key);
         let result = store.enroll(&adoption, NOW + 1).unwrap();
         assert_eq!(result.disposition, EnrollmentDisposition::Rotated);
-        assert_ne!(private_generation(&store), old_generation);
+        assert_ne!(
+            private_generation_for(&store, &legacy.account_id),
+            old_generation
+        );
         assert_eq!(store.pending_count(None).unwrap(), 1);
         let row: (Option<String>, Option<i64>) = store
             .db
             .query_row(
                 "SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
-                [ACCOUNT],
+                [&legacy.account_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(row, (Some(adoption.request_id.clone()), Some(17)));
+        assert_eq!(
+            row,
+            (
+                Some(adoption.request_id.clone()),
+                adoption.import_seq.map(|sequence| sequence as i64)
+            )
+        );
 
         let after_adoption = durable_snapshot(&store);
         let replay = store.enroll(&legacy, NOW + 2).unwrap();
@@ -2313,7 +2390,7 @@ mod tests {
             )
         );
 
-        let subscription = store.get_subscription(ACCOUNT).unwrap().unwrap();
+        let subscription = store.get_subscription(&legacy.account_id).unwrap().unwrap();
         let serialized = serde_json::to_string(&subscription).unwrap();
         assert!(!serialized.contains("event_identity"));
         assert!(!serialized.contains(&adoption.request_id));
@@ -2325,21 +2402,28 @@ mod tests {
             "../contracts/encrypted-push/v3/fixtures/first-v3-adoption-cases-v3.json"
         ))
         .unwrap();
-        for (index, mismatch) in fixture["rejected_adoption_mutations"]
+        for mismatch in fixture["rejected_adoption_mutations"]
             .as_array()
             .unwrap()
             .iter()
-            .enumerate()
         {
             let id = mismatch["id"].as_str().unwrap();
             let dir = TestDir::new();
             let mut store = dir.store();
-            let legacy = keyed_enrollment();
+            let legacy = crate::enrollment::parse(include_bytes!(
+                "../contracts/encrypted-push/v2/fixtures/enrollment-keyed.json"
+            ))
+            .unwrap();
             store.enroll(&legacy, NOW).unwrap();
-            store.enqueue(ACCOUNT, &event(&legacy, 909), NOW).unwrap();
+            store
+                .enqueue(&legacy.account_id, &event(&legacy, 909), NOW)
+                .unwrap();
             let before = durable_snapshot(&store);
-            let before_generation = private_generation(&store);
-            let mut candidate = v3_import_from(&legacy, 910 + index as u64, 20);
+            let before_generation = private_generation_for(&store, &legacy.account_id);
+            let mut candidate = crate::enrollment::parse(include_bytes!(
+                "../contracts/encrypted-push/v3/fixtures/enrollment-first-v3-adoption-v3.json"
+            ))
+            .unwrap();
             let value = &mismatch["value"];
             if mismatch["expected_error"] == "invalid_enrollment" {
                 let mut candidate_json = serde_json::to_value(&candidate).unwrap();
@@ -2352,7 +2436,10 @@ mod tests {
                     id
                 );
                 assert_eq!(durable_snapshot(&store), before);
-                assert_eq!(private_generation(&store), before_generation);
+                assert_eq!(
+                    private_generation_for(&store, &legacy.account_id),
+                    before_generation
+                );
                 continue;
             }
             match mismatch["path"].as_str().unwrap() {
@@ -2390,7 +2477,10 @@ mod tests {
                 assert!(store.receipt_for(&candidate).unwrap().is_none());
             }
             assert_eq!(durable_snapshot(&store), before);
-            assert_eq!(private_generation(&store), before_generation);
+            assert_eq!(
+                private_generation_for(&store, &legacy.account_id),
+                before_generation
+            );
         }
     }
 
@@ -3092,6 +3182,432 @@ mod tests {
                 .unwrap(),
             floor_before
         );
+    }
+
+    #[test]
+    fn server_v3_never_accepts_a_lower_epoch_with_a_newer_sequence() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let current = server_seed_v3(&mut store, 3, 8, None);
+        let before = durable_snapshot(&store);
+        let generation = private_generation(&store);
+        let mut lower = v3_import_from(&current, 918, 9);
+        lower.subscription.subscription_epoch = current.subscription.subscription_epoch - 1;
+
+        assert_eq!(
+            store.enroll(&lower, NOW + 10),
+            Err(StoreError::EpochConflict)
+        );
+        assert_eq!(durable_snapshot(&store), before);
+        assert_eq!(private_generation(&store), generation);
+        let retained: (i64, i64) = store
+            .db
+            .query_row(
+                "SELECT subscription_epoch,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                [ACCOUNT],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(retained, (3, 8));
+    }
+
+    #[test]
+    fn runtime_cases_v3_are_exercised_or_explicitly_phone_only() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v3/fixtures/runtime-cases-v3.json"
+        ))
+        .unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert!(!cases.is_empty(), "runtime case fixture must not be empty");
+        let mut seen = std::collections::HashSet::new();
+        for case in cases {
+            let id = case["id"].as_str().unwrap();
+            assert!(seen.insert(id), "duplicate runtime case {id}");
+            match id {
+                "stale-sequence-unseen-request-id" => {
+                    assert_eq!(case["expected"], "reject");
+                    assert_eq!(case["expected_error"], "epoch_conflict");
+                    let dir = TestDir::new();
+                    let mut store = dir.store();
+                    let retained = &case["retained"];
+                    let incoming = &case["incoming"];
+                    let current = server_seed_v3(
+                        &mut store,
+                        retained["epoch"].as_u64().unwrap(),
+                        retained["import_seq"].as_u64().unwrap(),
+                        None,
+                    );
+                    let before = durable_snapshot(&store);
+                    let mut stale =
+                        v3_import_from(&current, 1002, incoming["import_seq"].as_u64().unwrap());
+                    stale.subscription.subscription_epoch = incoming["epoch"].as_u64().unwrap();
+                    stale.control_key = Some(URL_SAFE_NO_PAD.encode([25; 32]));
+                    assert_eq!(
+                        store.enroll(&stale, NOW + 1),
+                        Err(StoreError::EpochConflict)
+                    );
+                    assert_eq!(durable_snapshot(&store), before);
+                }
+                "equal-sequence-nonidentical" => {
+                    assert_eq!(case["expected"], "reject");
+                    assert_eq!(case["expected_error"], "epoch_conflict");
+                    let dir = TestDir::new();
+                    let mut store = dir.store();
+                    let retained = &case["retained"];
+                    let incoming = &case["incoming"];
+                    let current = server_seed_v3(
+                        &mut store,
+                        retained["epoch"].as_u64().unwrap(),
+                        retained["import_seq"].as_u64().unwrap(),
+                        None,
+                    );
+                    let before = durable_snapshot(&store);
+                    let mut equal =
+                        v3_import_from(&current, 1004, incoming["import_seq"].as_u64().unwrap());
+                    equal.subscription.subscription_epoch = incoming["epoch"].as_u64().unwrap();
+                    assert_eq!(
+                        store.enroll(&equal, NOW + 1),
+                        Err(StoreError::EpochConflict)
+                    );
+                    assert_eq!(durable_snapshot(&store), before);
+                }
+                "same-epoch-different-key" => {
+                    assert_eq!(case["expected"], "reject");
+                    assert_eq!(case["expected_error"], "epoch_conflict");
+                    let dir = TestDir::new();
+                    let mut store = dir.store();
+                    let retained = &case["retained"];
+                    let incoming = &case["incoming"];
+                    let current = server_seed_v3(
+                        &mut store,
+                        retained["epoch"].as_u64().unwrap(),
+                        retained["import_seq"].as_u64().unwrap(),
+                        None,
+                    );
+                    let before = durable_snapshot(&store);
+                    let mut next =
+                        v3_import_from(&current, 1006, incoming["import_seq"].as_u64().unwrap());
+                    next.subscription.subscription_epoch = incoming["epoch"].as_u64().unwrap();
+                    next.control_key = Some(URL_SAFE_NO_PAD.encode([26; 32]));
+                    assert_eq!(store.enroll(&next, NOW + 1), Err(StoreError::EpochConflict));
+                    assert_eq!(durable_snapshot(&store), before);
+                }
+                "conflicting-repeated-request-id" => {
+                    assert_eq!(case["expected"], "reject");
+                    assert_eq!(case["expected_error"], "idempotency_conflict");
+                    let dir = TestDir::new();
+                    let mut store = dir.store();
+                    let retained = &case["retained"];
+                    let current = server_seed_v3(
+                        &mut store,
+                        retained["epoch"].as_u64().unwrap(),
+                        retained["import_seq"].as_u64().unwrap(),
+                        None,
+                    );
+                    let before = durable_snapshot(&store);
+                    let mut conflict = current.clone();
+                    conflict.password.push_str("-different");
+                    assert_eq!(
+                        store.enroll(&conflict, NOW + 1),
+                        Err(StoreError::IdempotencyConflict)
+                    );
+                    assert_eq!(durable_snapshot(&store), before);
+                }
+                "reaffirm-same-epoch-fresh-id" => {
+                    assert_eq!(case["expected"], "accept");
+                    let dir = TestDir::new();
+                    let mut store = dir.store();
+                    let retained = &case["retained"];
+                    let incoming = &case["incoming"];
+                    let first = server_seed_v3(
+                        &mut store,
+                        retained["epoch"].as_u64().unwrap(),
+                        retained["import_seq"].as_u64().unwrap(),
+                        None,
+                    );
+                    let generation = private_generation(&store);
+                    let mut second =
+                        v3_import_from(&first, 1009, incoming["import_seq"].as_u64().unwrap());
+                    second.subscription.subscription_epoch = incoming["epoch"].as_u64().unwrap();
+                    store
+                        .enroll(
+                            &second,
+                            NOW + retained["epoch"].as_u64().unwrap() as i64 + 1,
+                        )
+                        .unwrap();
+                    assert_ne!(private_generation(&store), generation);
+                    let row: (Option<String>, Option<i64>) = store.db.query_row("SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1", [ACCOUNT], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+                    assert_eq!(
+                        row,
+                        (
+                            Some(second.request_id.clone()),
+                            Some(incoming["import_seq"].as_i64().unwrap())
+                        )
+                    );
+                    assert_eq!(case["row_state"], "active");
+                    assert_eq!(case["row_claimable"], true);
+                    assert_eq!(case["old_queued_work_invalidated"], true);
+                    assert_eq!(case["confirmation_queued_atomically"], true);
+                    let confirmation = store
+                        .claim_due(NOW + retained["epoch"].as_u64().unwrap() as i64 + 2)
+                        .unwrap()
+                        .unwrap()
+                        .event;
+                    assert_eq!(confirmation.kind, "status");
+                    assert_eq!(confirmation.code.as_deref(), Some("enrollment_imported"));
+                    assert_eq!(
+                        confirmation.import_id.as_deref(),
+                        Some(second.request_id.as_str())
+                    );
+                    assert_eq!(case["confirmation_claimable"], true);
+                }
+                "old-file-recorded-reimport-after-newer-same-epoch" => {
+                    assert_eq!(case["expected"], "saved_historical_receipt");
+                    let dir = TestDir::new();
+                    let mut store = dir.store();
+                    let input = case["incoming"].clone();
+                    let request = input["request_id"].as_str().unwrap();
+                    let stale_seq = input["import_seq"].as_u64().unwrap();
+                    let epoch = input["epoch"].as_u64().unwrap();
+                    let template = crate::enrollment::parse(include_bytes!(
+                        "../contracts/encrypted-push/v3/fixtures/enrollment-historical-request-v3.json"
+                    ))
+                    .unwrap();
+                    let first = server_seed_v3_from_template(
+                        &mut store,
+                        &template,
+                        epoch,
+                        stale_seq,
+                        Some(request),
+                    );
+                    assert_eq!(first.request_id, request);
+                    assert_eq!(first.account_id, input["account_id"].as_str().unwrap());
+                    assert_eq!(first.device_id, input["device_id"].as_u64().unwrap() as u32);
+                    assert_eq!(
+                        first.subscription.instance,
+                        input["instance"].as_str().unwrap()
+                    );
+                    assert_eq!(
+                        event_key_id(
+                            &first.account_id,
+                            first.device_id,
+                            &first.subscription.instance,
+                            first.control_key.as_deref().unwrap(),
+                        )
+                        .unwrap(),
+                        input["key_id"].as_str().unwrap()
+                    );
+                    let mut current = v3_import_from(
+                        &first,
+                        1011,
+                        case["retained"]["import_seq"].as_u64().unwrap(),
+                    );
+                    current.subscription.subscription_epoch = epoch;
+                    store.enroll(&current, NOW + 1).unwrap();
+                    let before = durable_snapshot(&store);
+                    let generation = private_generation_for(&store, &first.account_id);
+                    let pending = store.pending_count(Some(&first.account_id)).unwrap();
+                    let historical = store.enroll(&first, NOW + 2).unwrap();
+                    assert!(historical.replayed);
+                    assert_eq!(historical.subscription_epoch, epoch);
+                    assert_eq!(case["replayed"], historical.replayed);
+                    assert_eq!(durable_snapshot(&store), before);
+                    assert_eq!(
+                        private_generation_for(&store, &first.account_id),
+                        generation
+                    );
+                    assert!(!crate::enrollment::current_v3_replay_status(
+                        &mut store,
+                        &first,
+                        &historical,
+                        NOW + 2
+                    )
+                    .unwrap());
+                    assert_eq!(durable_snapshot(&store), before);
+                    assert_eq!(
+                        private_generation_for(&store, &first.account_id),
+                        generation
+                    );
+                    assert_eq!(
+                        store.pending_count(Some(&first.account_id)).unwrap(),
+                        pending
+                    );
+                }
+                "old-file-unseen-reimport-after-newer-same-epoch" => {
+                    assert_eq!(case["expected"], "reject");
+                    assert_eq!(case["expected_error"], "epoch_conflict");
+                    let dir = TestDir::new();
+                    let mut store = dir.store();
+                    let retained = case["retained"].clone();
+                    let current = server_seed_v3(
+                        &mut store,
+                        retained["epoch"].as_u64().unwrap(),
+                        retained["import_seq"].as_u64().unwrap(),
+                        None,
+                    );
+                    let input = case["incoming"].clone();
+                    let mut stale =
+                        v3_import_from(&current, 1013, input["import_seq"].as_u64().unwrap());
+                    stale.request_id = input["request_id"].as_str().unwrap().to_owned();
+                    stale.subscription.subscription_epoch = input["epoch"].as_u64().unwrap();
+                    let before = durable_snapshot(&store);
+                    assert_eq!(
+                        store.enroll(&stale, NOW + 1),
+                        Err(StoreError::EpochConflict)
+                    );
+                    assert_eq!(durable_snapshot(&store), before);
+                }
+                "delayed-old-same-epoch-event"
+                | "legacy-unknown-intent"
+                | "explicit-lower-epoch-recovery"
+                | "lost-status-later-wake"
+                | "ordinary-lower-epoch-before-later-candidate"
+                | "cap-refusal-rerender-restart"
+                | "rerender-existing-no-slot"
+                | "restart-retains-pending-intents"
+                | "unknown-legacy-migration" => {
+                    /* Phone-only runtime behavior; exercised by Android lane. */
+                    let expected = match id {
+                        "delayed-old-same-epoch-event"
+                        | "legacy-unknown-intent"
+                        | "unknown-legacy-migration" => "no_promotion",
+                        "explicit-lower-epoch-recovery" => "recover",
+                        "lost-status-later-wake"
+                        | "ordinary-lower-epoch-before-later-candidate"
+                        | "rerender-existing-no-slot"
+                        | "restart-retains-pending-intents" => "accept",
+                        "cap-refusal-rerender-restart" => "reject",
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(case["expected"], expected);
+                }
+                unknown => panic!("unclassified runtime case: {unknown}"),
+            }
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(48))]
+        #[test]
+        fn v3_sequence_attempts_preserve_floor_and_rejected_state(ops in proptest::collection::vec((0u8..3, 0u8..3, 0u8..2, 0u8..5), 1..12)) {
+            let dir = TestDir::new();
+            let mut store = dir.store();
+            let mut current = v3_enrollment();
+            store.enroll(&current, NOW).unwrap();
+            let mut floor = 1u64;
+            let mut epoch = 1u64;
+            let initial: (i64, i64) = store.db.query_row(
+                "SELECT subscription_epoch,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                [ACCOUNT],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).unwrap();
+            proptest::prop_assert_eq!(initial, (1, 1));
+
+            for (index, (sequence_mode, epoch_mode, key_mode, context_mode)) in ops.into_iter().enumerate() {
+                let before = durable_snapshot(&store);
+                let mut candidate = current.clone();
+                candidate.request_id = id(30_000 + index as u64);
+                let incoming_seq = match sequence_mode {
+                    0 => floor,
+                    1 => floor.saturating_sub(1).max(1),
+                    _ => floor + 1,
+                };
+                candidate.import_seq = Some(incoming_seq);
+                let incoming_epoch = match epoch_mode {
+                    0 => epoch,
+                    1 => epoch + 1,
+                    _ => epoch + 2,
+                };
+                candidate.subscription.subscription_epoch = incoming_epoch;
+                if key_mode == 1 {
+                    candidate.control_key = Some(URL_SAFE_NO_PAD.encode([index as u8 + 40; 32]));
+                }
+                match context_mode {
+                    0 => {}
+                    1 => candidate.password.push_str(&format!("-{index}")),
+                    2 => candidate.device_id += index as u32 + 1,
+                    3 => {
+                        candidate.subscription.auth =
+                            URL_SAFE_NO_PAD.encode([index as u8 + 40; 16])
+                    }
+                    _ => candidate.subscription.instance.push_str(&format!("-{index}")),
+                }
+                let fresh_key = candidate.control_key != current.control_key;
+                let unchanged_context = context_mode == 0;
+                let accepted = incoming_seq > floor
+                    && ((incoming_epoch == epoch && !fresh_key && unchanged_context)
+                        || (incoming_epoch == epoch + 1 && fresh_key));
+                let result = store.enroll(&candidate, NOW + index as i64 + 1);
+                proptest::prop_assert_eq!(result.is_ok(), accepted);
+                if accepted {
+                    floor = incoming_seq;
+                    epoch = incoming_epoch;
+                    current = candidate;
+                } else {
+                    proptest::prop_assert_eq!(result, Err(StoreError::EpochConflict));
+                    proptest::prop_assert_eq!(durable_snapshot(&store), before);
+                }
+                let retained: (i64, i64) = store.db.query_row(
+                    "SELECT subscription_epoch,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
+                    [ACCOUNT],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                ).unwrap();
+                proptest::prop_assert_eq!(retained, (epoch as i64, floor as i64));
+            }
+        }
+    }
+
+    #[test]
+    fn same_epoch_reaffirmation_rejects_changed_credentials_and_subscription() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let current = v3_enrollment();
+        store.enroll(&current, NOW).unwrap();
+
+        // The contract permits same-epoch reaffirmation only for unchanged
+        // credentials, key, and subscription context.
+        for (index, mutation) in [
+            "password",
+            "device_id",
+            "subscription.auth",
+            "subscription.instance",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut candidate = current.clone();
+            candidate.request_id = id(31_000 + index as u64);
+            candidate.import_seq = Some(2);
+            match mutation {
+                "password" => candidate.password.push_str("-changed"),
+                "device_id" => candidate.device_id += 1,
+                "subscription.auth" => {
+                    candidate.subscription.auth = URL_SAFE_NO_PAD.encode([8u8; 16])
+                }
+                "subscription.instance" => candidate.subscription.instance.push_str("-changed"),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                candidate.subscription.subscription_epoch, current.subscription.subscription_epoch,
+                "{mutation} candidate keeps the epoch"
+            );
+            assert_eq!(candidate.control_key, current.control_key);
+            assert_eq!(candidate.import_seq, Some(2));
+
+            let before = durable_snapshot(&store);
+            let generation = private_generation(&store);
+            assert_eq!(
+                store.enroll(&candidate, NOW + 1),
+                Err(StoreError::EpochConflict),
+                "{mutation} must not qualify as reaffirmation"
+            );
+            assert_eq!(durable_snapshot(&store), before, "{mutation}");
+            assert_eq!(private_generation(&store), generation, "{mutation}");
+            assert!(
+                store.receipt_for(&candidate).unwrap().is_none(),
+                "{mutation}"
+            );
+        }
     }
 
     #[test]
@@ -4437,6 +4953,37 @@ mod tests {
         assert_eq!(
             store.get_subscription(ACCOUNT).unwrap().unwrap(),
             e.subscription
+        );
+    }
+
+    #[test]
+    fn enrollment_receipts_are_scoped_by_account_and_request_id() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let first = enrollment();
+        assert_eq!(
+            store.enroll(&first, NOW).unwrap().disposition,
+            EnrollmentDisposition::Created
+        );
+
+        let mut second_account = first.clone();
+        second_account.account_id = id(2);
+        assert_eq!(second_account.request_id, first.request_id);
+        let second_receipt = store.enroll(&second_account, NOW + 1).unwrap();
+        assert_eq!(second_receipt.disposition, EnrollmentDisposition::Created);
+        assert!(!second_receipt.replayed);
+        assert!(store.enroll(&first, NOW + 2).unwrap().replayed);
+        assert!(store.enroll(&second_account, NOW + 2).unwrap().replayed);
+        assert_eq!(
+            store.get_subscription(&first.account_id).unwrap().unwrap(),
+            first.subscription
+        );
+        assert_eq!(
+            store
+                .get_subscription(&second_account.account_id)
+                .unwrap()
+                .unwrap(),
+            second_account.subscription
         );
     }
 

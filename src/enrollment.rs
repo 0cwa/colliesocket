@@ -218,6 +218,17 @@ mod tests {
     }
 
     #[test]
+    fn fuzz_corpus_enrollment_seed_replays_through_production_parser() {
+        let seed = include_bytes!("../fuzz/corpus/enrollment_parse/valid-keyed-v3.json");
+        let parsed = parse(seed).unwrap();
+        assert_eq!(parsed.enrollment_version, 3);
+        assert_eq!(parsed.import_seq, Some(1));
+        crate::fuzz_api::replay_committed_corpus("enrollment_parse", |bytes| {
+            crate::fuzz_api::parse_enrollment(bytes);
+        });
+    }
+
+    #[test]
     fn v3_receipts_distinguish_current_and_historical_replays_without_identity_leaks() {
         let enrollment = response_enrollment(3);
         let cached = push_store::EnrollmentResult {

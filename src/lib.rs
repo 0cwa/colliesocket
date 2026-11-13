@@ -18,6 +18,9 @@ mod utils;
 mod vapid;
 mod ws;
 
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod fuzz_api;
+
 /// Run the existing command-line interface once inside its Tokio runtime.
 ///
 /// This parses process arguments, initializes the process logger and global
