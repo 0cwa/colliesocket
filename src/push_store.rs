@@ -2314,25 +2314,47 @@ mod tests {
     fn keyed_legacy_row_adopts_v3_at_the_same_epoch_and_queues_bound_status() {
         let dir = TestDir::new();
         let mut store = dir.store();
-        let legacy = keyed_enrollment();
+        let legacy = crate::enrollment::parse(include_bytes!(
+            "../contracts/encrypted-push/v2/fixtures/enrollment-keyed.json"
+        ))
+        .unwrap();
         store.enroll(&legacy, NOW).unwrap();
-        store.enqueue(ACCOUNT, &event(&legacy, 903), NOW).unwrap();
-        let old_generation = private_generation(&store);
+        store
+            .enqueue(&legacy.account_id, &event(&legacy, 903), NOW)
+            .unwrap();
+        let old_generation = private_generation_for(&store, &legacy.account_id);
 
-        let adoption = v3_import_from(&legacy, 904, 17);
+        let adoption = crate::enrollment::parse(include_bytes!(
+            "../contracts/encrypted-push/v3/fixtures/enrollment-first-v3-adoption-v3.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            adoption.subscription.subscription_epoch,
+            legacy.subscription.subscription_epoch
+        );
+        assert_eq!(adoption.control_key, legacy.control_key);
         let result = store.enroll(&adoption, NOW + 1).unwrap();
         assert_eq!(result.disposition, EnrollmentDisposition::Rotated);
-        assert_ne!(private_generation(&store), old_generation);
+        assert_ne!(
+            private_generation_for(&store, &legacy.account_id),
+            old_generation
+        );
         assert_eq!(store.pending_count(None).unwrap(), 1);
         let row: (Option<String>, Option<i64>) = store
             .db
             .query_row(
                 "SELECT import_id,import_seq FROM encrypted_subscriptions WHERE account_id=?1",
-                [ACCOUNT],
+                [&legacy.account_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(row, (Some(adoption.request_id.clone()), Some(17)));
+        assert_eq!(
+            row,
+            (
+                Some(adoption.request_id.clone()),
+                adoption.import_seq.map(|sequence| sequence as i64)
+            )
+        );
 
         let after_adoption = durable_snapshot(&store);
         let replay = store.enroll(&legacy, NOW + 2).unwrap();
@@ -2368,7 +2390,7 @@ mod tests {
             )
         );
 
-        let subscription = store.get_subscription(ACCOUNT).unwrap().unwrap();
+        let subscription = store.get_subscription(&legacy.account_id).unwrap().unwrap();
         let serialized = serde_json::to_string(&subscription).unwrap();
         assert!(!serialized.contains("event_identity"));
         assert!(!serialized.contains(&adoption.request_id));
@@ -2380,21 +2402,28 @@ mod tests {
             "../contracts/encrypted-push/v3/fixtures/first-v3-adoption-cases-v3.json"
         ))
         .unwrap();
-        for (index, mismatch) in fixture["rejected_adoption_mutations"]
+        for mismatch in fixture["rejected_adoption_mutations"]
             .as_array()
             .unwrap()
             .iter()
-            .enumerate()
         {
             let id = mismatch["id"].as_str().unwrap();
             let dir = TestDir::new();
             let mut store = dir.store();
-            let legacy = keyed_enrollment();
+            let legacy = crate::enrollment::parse(include_bytes!(
+                "../contracts/encrypted-push/v2/fixtures/enrollment-keyed.json"
+            ))
+            .unwrap();
             store.enroll(&legacy, NOW).unwrap();
-            store.enqueue(ACCOUNT, &event(&legacy, 909), NOW).unwrap();
+            store
+                .enqueue(&legacy.account_id, &event(&legacy, 909), NOW)
+                .unwrap();
             let before = durable_snapshot(&store);
-            let before_generation = private_generation(&store);
-            let mut candidate = v3_import_from(&legacy, 910 + index as u64, 20);
+            let before_generation = private_generation_for(&store, &legacy.account_id);
+            let mut candidate = crate::enrollment::parse(include_bytes!(
+                "../contracts/encrypted-push/v3/fixtures/enrollment-first-v3-adoption-v3.json"
+            ))
+            .unwrap();
             let value = &mismatch["value"];
             if mismatch["expected_error"] == "invalid_enrollment" {
                 let mut candidate_json = serde_json::to_value(&candidate).unwrap();
@@ -2407,7 +2436,10 @@ mod tests {
                     id
                 );
                 assert_eq!(durable_snapshot(&store), before);
-                assert_eq!(private_generation(&store), before_generation);
+                assert_eq!(
+                    private_generation_for(&store, &legacy.account_id),
+                    before_generation
+                );
                 continue;
             }
             match mismatch["path"].as_str().unwrap() {
@@ -2445,7 +2477,10 @@ mod tests {
                 assert!(store.receipt_for(&candidate).unwrap().is_none());
             }
             assert_eq!(durable_snapshot(&store), before);
-            assert_eq!(private_generation(&store), before_generation);
+            assert_eq!(
+                private_generation_for(&store, &legacy.account_id),
+                before_generation
+            );
         }
     }
 
@@ -3454,7 +3489,7 @@ mod tests {
     proptest::proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(48))]
         #[test]
-        fn v3_sequence_attempts_preserve_floor_and_rejected_state(ops in proptest::collection::vec((0u8..3, 0u8..3, 0u8..2), 1..12)) {
+        fn v3_sequence_attempts_preserve_floor_and_rejected_state(ops in proptest::collection::vec((0u8..3, 0u8..3, 0u8..2, 0u8..5), 1..12)) {
             let dir = TestDir::new();
             let mut store = dir.store();
             let mut current = v3_enrollment();
@@ -3468,7 +3503,7 @@ mod tests {
             ).unwrap();
             proptest::prop_assert_eq!(initial, (1, 1));
 
-            for (index, (sequence_mode, epoch_mode, key_mode)) in ops.into_iter().enumerate() {
+            for (index, (sequence_mode, epoch_mode, key_mode, context_mode)) in ops.into_iter().enumerate() {
                 let before = durable_snapshot(&store);
                 let mut candidate = current.clone();
                 candidate.request_id = id(30_000 + index as u64);
@@ -3487,9 +3522,20 @@ mod tests {
                 if key_mode == 1 {
                     candidate.control_key = Some(URL_SAFE_NO_PAD.encode([index as u8 + 40; 32]));
                 }
+                match context_mode {
+                    0 => {}
+                    1 => candidate.password.push_str(&format!("-{index}")),
+                    2 => candidate.device_id += index as u32 + 1,
+                    3 => {
+                        candidate.subscription.auth =
+                            URL_SAFE_NO_PAD.encode([index as u8 + 40; 16])
+                    }
+                    _ => candidate.subscription.instance.push_str(&format!("-{index}")),
+                }
                 let fresh_key = candidate.control_key != current.control_key;
+                let unchanged_context = context_mode == 0;
                 let accepted = incoming_seq > floor
-                    && ((incoming_epoch == epoch && !fresh_key)
+                    && ((incoming_epoch == epoch && !fresh_key && unchanged_context)
                         || (incoming_epoch == epoch + 1 && fresh_key));
                 let result = store.enroll(&candidate, NOW + index as i64 + 1);
                 proptest::prop_assert_eq!(result.is_ok(), accepted);
@@ -3508,6 +3554,59 @@ mod tests {
                 ).unwrap();
                 proptest::prop_assert_eq!(retained, (epoch as i64, floor as i64));
             }
+        }
+    }
+
+    #[test]
+    fn same_epoch_reaffirmation_rejects_changed_credentials_and_subscription() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let current = v3_enrollment();
+        store.enroll(&current, NOW).unwrap();
+
+        // The contract permits same-epoch reaffirmation only for unchanged
+        // credentials, key, and subscription context.
+        for (index, mutation) in [
+            "password",
+            "device_id",
+            "subscription.auth",
+            "subscription.instance",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut candidate = current.clone();
+            candidate.request_id = id(31_000 + index as u64);
+            candidate.import_seq = Some(2);
+            match mutation {
+                "password" => candidate.password.push_str("-changed"),
+                "device_id" => candidate.device_id += 1,
+                "subscription.auth" => {
+                    candidate.subscription.auth = URL_SAFE_NO_PAD.encode([8u8; 16])
+                }
+                "subscription.instance" => candidate.subscription.instance.push_str("-changed"),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                candidate.subscription.subscription_epoch, current.subscription.subscription_epoch,
+                "{mutation} candidate keeps the epoch"
+            );
+            assert_eq!(candidate.control_key, current.control_key);
+            assert_eq!(candidate.import_seq, Some(2));
+
+            let before = durable_snapshot(&store);
+            let generation = private_generation(&store);
+            assert_eq!(
+                store.enroll(&candidate, NOW + 1),
+                Err(StoreError::EpochConflict),
+                "{mutation} must not qualify as reaffirmation"
+            );
+            assert_eq!(durable_snapshot(&store), before, "{mutation}");
+            assert_eq!(private_generation(&store), generation, "{mutation}");
+            assert!(
+                store.receipt_for(&candidate).unwrap().is_none(),
+                "{mutation}"
+            );
         }
     }
 

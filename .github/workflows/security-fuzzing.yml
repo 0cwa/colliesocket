@@ -10,13 +10,13 @@ on:
         default: main
         type: string
   schedule:
-    - cron: '27 4 * * 2'
+    - cron: '27 4 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: colliesocket-security-fuzz-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  group: colliesocket-security-fuzz-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -53,6 +53,7 @@ jobs:
         env:
           FUZZ_CACHE: ${{ runner.temp }}/colliesocket-fuzz-cache
           FUZZ_EVIDENCE: ${{ runner.temp }}/colliesocket-fuzz-evidence
+          REQUESTED_REF: ${{ github.event.pull_request.head.sha || inputs.ref || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -75,11 +76,11 @@ jobs:
             duration=$(( $(date +%s) - started ))
             cache_count=$(find "$FUZZ_CACHE/$target" -type f | wc -l)
             cache_delta=$(( cache_count - cache_before ))
-            if [[ $result -eq 0 ]] && { ! grep -Eq '#[0-9]+[[:space:]]+DONE[[:space:]]+cov: [1-9][0-9]*.*exec/s: [1-9][0-9]*' "$FUZZ_EVIDENCE/$target.log" || [[ $cache_delta -le 0 ]]; }; then
+            if [[ $result -eq 0 ]] && ! grep -Eq '#[1-9][0-9]*[[:space:]]+DONE[[:space:]]+cov: [1-9][0-9]*.*exec/s: [1-9][0-9]*' "$FUZZ_EVIDENCE/$target.log"; then
               result=1
             fi
-            printf 'source_sha=%s\ntarget=%s\nresult=%s\nduration_seconds=%s\nseed_files=%s\ndiscovery_cache_before=%s\ndiscovery_cache_after=%s\ndiscovery_cache_new=%s\ncommand=cargo +nightly-2025-09-15 fuzz run %s %s fuzz/corpus/%s -- -max_total_time=60 -timeout=5 -rss_limit_mb=2048 -max_len=8192\n' \
-              "$source_sha" "$target" "$result" "$duration" "$seed_count" "$cache_before" "$cache_count" "$cache_delta" "$target" "$FUZZ_CACHE/$target" "$target" > "$FUZZ_EVIDENCE/$target.txt"
+            printf 'requested_ref=%s\nsource_sha=%s\ntarget=%s\nresult=%s\nduration_seconds=%s\nseed_files=%s\ndiscovery_cache_before=%s\ndiscovery_cache_after=%s\ndiscovery_cache_new=%s\ncommand=cargo +nightly-2025-09-15 fuzz run %s %s fuzz/corpus/%s -- -max_total_time=60 -timeout=5 -rss_limit_mb=2048 -max_len=8192\n' \
+              "$REQUESTED_REF" "$source_sha" "$target" "$result" "$duration" "$seed_count" "$cache_before" "$cache_count" "$cache_delta" "$target" "$FUZZ_CACHE/$target" "$target" > "$FUZZ_EVIDENCE/$target.txt"
             [[ $result -eq 0 ]] || overall=1
           done
           exit "$overall"
@@ -87,7 +88,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: colliesocket-fuzz-${{ github.event.pull_request.head.sha || inputs.ref || github.sha }}
+          name: colliesocket-fuzz-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/colliesocket-fuzz-evidence
             fuzz/artifacts
