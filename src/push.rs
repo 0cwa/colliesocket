@@ -162,6 +162,11 @@ pub fn response_outcome(status: u16, retry_after: Option<&str>) -> DeliveryOutco
         _ => DeliveryOutcome::PermanentFailure,
     }
 }
+
+fn provider_http_failure_status(status: u16) -> Option<u16> {
+    (!(200..=299).contains(&status)).then_some(status)
+}
+
 fn encrypt_event(event: &Event, sub: &Subscription) -> Result<Vec<u8>, &'static str> {
     crate::push_store::validate_event(event, now()).map_err(|e| e.code())?;
     let bytes = serde_json::to_vec(event).map_err(|_| "invalid_event")?;
@@ -197,13 +202,21 @@ pub async fn drain_once() -> Result<bool, &'static str> {
     } else {
         let url = url::Url::parse(&claim.subscription.endpoint).map_err(|_| "invalid_endpoint")?;
         match post_allowed::post_encrypted(url, body, ttl.clamp(1, 300) as u32).await {
-            Ok(response) => response_outcome(
-                response.status().as_u16(),
-                response
-                    .headers()
-                    .get("Retry-After")
-                    .and_then(|h| h.to_str().ok()),
-            ),
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if let Some(status) = provider_http_failure_status(status) {
+                    // Status is useful for provider diagnosis; endpoint and response data may
+                    // contain credentials, topic tokens, or other subscription secrets.
+                    log::warn!("push_provider_http_failure status={status}");
+                }
+                response_outcome(
+                    status,
+                    response
+                        .headers()
+                        .get("Retry-After")
+                        .and_then(|h| h.to_str().ok()),
+                )
+            }
             Err(_) => DeliveryOutcome::Retry { retry_after: None },
         }
     };
@@ -238,6 +251,12 @@ mod tests {
         assert!(matches!(
             response_outcome(403, None),
             DeliveryOutcome::ProviderRejected
+        ));
+        assert_eq!(provider_http_failure_status(400), Some(400));
+        assert_eq!(provider_http_failure_status(202), None);
+        assert!(matches!(
+            response_outcome(400, None),
+            DeliveryOutcome::PermanentFailure
         ));
         assert!(matches!(
             response_outcome(302, None),

@@ -149,6 +149,7 @@ The configuration file uses the [TOML format](https://toml.io/). Below is an ove
 | port                   | MOLLY_PORT              \* |             | Listening port of the web server                  | 8020                 | 8080                                                    |
 | webserver              | MOLLY_WEBSERVER         \* |             | Wether to start the web server                    | true                 | false                                                   |
 | allowed_endpoints      | MOLLY_ALLOWED_ENDPOINTS \* |             | List of UnifiedPush servers                       | `["*"]`              | `["*"]`,`["https://yourdomain.tld","https://ntfy.sh"]`  |
+| required_endpoint_queries | MOLLY_REQUIRED_ENDPOINT_QUERIES \* |             | Required query pairs per endpoint origin           | `[]`                 | `["https://push.example/?up=1"]`                     |
 | allowed_uuids          | MOLLY_ALLOWED_UUIDS     \* |             | UUIDs of signal accounts that may use this server | `["*"]`              | `["*"]`, `["abcdef-12345-tuxyz-67890"]`                 |
 | db                     | MOLLY_DB                \* |             | Path to the DB                                    | `db.sqlite`          | `"/data/ms.sqlite"`                                     |
 | vapid_privkey          | MOLLY_VAPID_PRIVKEY     \* |             | VAPID key, see [VAPID key](#vapid-key)            | None                 | "DSqYuWchrB6yIMYJtidvqANeRQic4uWy34afzZRsZnI"           |
@@ -186,6 +187,12 @@ These are the UnifiedPush endpoints that MollySocket may use to push notificatio
 ⚠️ **If you self-host your push server, add your push server to the `allowed_endpoints`.** ⚠️
 
 That's because, for security reasons, endpoints on your local network must be allowed explicitly. You just have to set the scheme (https), the domain and the port if required. For instance `allowed_endpoints=['https://push.mydomain.tld']`
+
+### `required_endpoint_queries`
+
+This optional setting adds query requirements to an endpoint origin; it does not allow a destination by itself. Each entry uses the origin followed by required query pairs, for example `required_endpoint_queries=['https://push.example/?up=1']`. Use only a scheme, host, optional port, root path, and query; malformed rules fail configuration loading. The origin must still pass the `allowed_endpoints` policy. When a rule matches an endpoint, each required query name must appear exactly once with the configured value; additional query pairs are allowed. Multiple rules for one origin are cumulative. The empty default preserves existing behavior. Rules are checked for enrollment, authenticated endpoint updates, and outgoing requests.
+
+For a non-successful HTTP response, the server logs the provider status code only. It does not log the endpoint URL, query, or response body.
 
 ### `allowed_uuids`
 
