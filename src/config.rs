@@ -5,6 +5,7 @@ use figment::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     env,
     fmt::{self, Debug},
     path::PathBuf,
@@ -38,6 +39,7 @@ struct Config {
     #[serde(skip)]
     test_signal_root: Option<native_tls::Certificate>,
     allowed_endpoints: Vec<String>,
+    required_endpoint_queries: Vec<String>,
     allowed_uuids: Vec<String>,
     db: String,
     legacy_wake_until: i64,
@@ -81,6 +83,7 @@ impl Default for Config {
             #[cfg(all(feature = "test-signal", debug_assertions, colliesocket_test_signal))]
             test_signal_root: None,
             allowed_endpoints: vec![String::from("*")],
+            required_endpoint_queries: Vec::new(),
             allowed_uuids: vec![String::from("*")],
             db: String::from("./mollysocket.db"),
             legacy_wake_until: 0,
@@ -201,6 +204,14 @@ pub fn load_config(cli_config_path: Option<PathBuf>) {
             process::exit(1);
         }
         if config.ready_port == 0 {
+            eprintln!("invalid_configuration");
+            process::exit(1);
+        }
+        if config
+            .required_endpoint_queries
+            .iter()
+            .any(|rule| parse_required_endpoint_query(rule).is_none())
+        {
             eprintln!("invalid_configuration");
             process::exit(1);
         }
@@ -362,6 +373,9 @@ impl Config {
         {
             return EndpointValidity::NotInConfig;
         }
+        if !self.required_endpoint_queries_match(url) {
+            return EndpointValidity::NotInConfig;
+        }
         if self.is_endpoint_allowed_by_user(url) {
             EndpointValidity::Ok
         } else {
@@ -412,6 +426,72 @@ impl Config {
             }
         })
     }
+
+    fn required_endpoint_queries_match(&self, url: &url::Url) -> bool {
+        for rule in &self.required_endpoint_queries {
+            let Some((origin, requirements)) = parse_required_endpoint_query(rule) else {
+                return false;
+            };
+            if origin != url.origin() {
+                continue;
+            }
+            for (required_name, required_value) in requirements {
+                let mut matches = url
+                    .query_pairs()
+                    .filter(|(name, _)| name.as_ref() == required_name.as_str());
+                if !matches
+                    .next()
+                    .is_some_and(|(_, value)| value.as_ref() == required_value.as_str())
+                    || matches.next().is_some()
+                {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
+fn parse_required_endpoint_query(rule: &str) -> Option<(url::Origin, Vec<(String, String)>)> {
+    if rule.len() > 2048
+        || !rule.is_ascii()
+        || rule.bytes().any(|b| b <= 32 || b == 127)
+        || rule.contains('\\')
+        || rule.split_once("://").is_none_or(|(_, tail)| {
+            tail.split(['/', '?', '#'])
+                .next()
+                .unwrap_or("")
+                .contains('@')
+        })
+    {
+        return None;
+    }
+    let url = url::Url::parse(rule).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+        || url.port_or_known_default().is_none_or(|port| port == 0)
+    {
+        return None;
+    }
+    let requirements: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect();
+    if requirements.is_empty() || requirements.iter().any(|(name, _)| name.is_empty()) {
+        return None;
+    }
+    let mut names = HashSet::new();
+    if requirements
+        .iter()
+        .any(|(name, _)| !names.insert(name.as_str()))
+    {
+        return None;
+    }
+    Some((url.origin(), requirements))
 }
 
 #[cfg(test)]
@@ -605,6 +685,26 @@ mod tests {
         assert!(!cfg.is_uuid_valid("11111111-3d88-43de-bcdb-f6657d3484e4"));
     }
 
+    #[test]
+    fn required_endpoint_queries_load_from_toml_and_default_empty() {
+        let defaults: Config = Figment::from(Serialized::defaults(Config::default()))
+            .extract()
+            .unwrap();
+        assert!(defaults.required_endpoint_queries.is_empty());
+
+        let configured: Config = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::string(
+                r#"required_endpoint_queries = ["https://push.example/?up=private-value"]"#,
+            ))
+            .extract()
+            .unwrap();
+        assert_eq!(
+            configured.required_endpoint_queries,
+            vec![String::from("https://push.example/?up=private-value")]
+        );
+        assert!(!format!("{configured:?}").contains("private-value"));
+    }
+
     #[tokio::test]
     async fn check_endpoint() {
         let cfg = test_config("", "https://ntfy.sh/");
@@ -630,6 +730,110 @@ mod tests {
                 .await,
             EndpointValidity::NotInConfig
         );
+    }
+
+    #[tokio::test]
+    async fn required_endpoint_queries_are_opt_in_and_match_exactly() {
+        let cfg = Config {
+            allowed_endpoints: vec![String::from("https://push.example")],
+            required_endpoint_queries: vec![String::from("https://push.example/?up=1")],
+            ..Config::default()
+        };
+        for endpoint in [
+            "https://push.example/topic?up=1",
+            "https://push.example/topic?other=x&up=1",
+        ] {
+            assert_eq!(
+                cfg.is_url_endpoint_valid(&url::Url::parse(endpoint).unwrap())
+                    .await,
+                EndpointValidity::Ok,
+                "{endpoint}"
+            );
+        }
+        for endpoint in [
+            "https://push.example/topic",
+            "https://push.example/topic?up=0",
+            "https://push.example/topic?up=1&up=1",
+        ] {
+            assert_eq!(
+                cfg.is_url_endpoint_valid(&url::Url::parse(endpoint).unwrap())
+                    .await,
+                EndpointValidity::NotInConfig,
+                "{endpoint}"
+            );
+        }
+
+        let no_query_policy = test_config("", "https://push.example/");
+        assert_eq!(
+            no_query_policy
+                .is_url_endpoint_valid(
+                    &url::Url::parse("https://push.example/topic?anything=accepted").unwrap()
+                )
+                .await,
+            EndpointValidity::Ok
+        );
+    }
+
+    #[tokio::test]
+    async fn endpoint_query_requirements_neither_cross_origins_nor_grant_access() {
+        let cfg = Config {
+            allowed_endpoints: vec![String::from("https://other.example")],
+            required_endpoint_queries: vec![String::from("https://push.example/?up=1")],
+            ..Config::default()
+        };
+        assert_eq!(
+            cfg.is_url_endpoint_valid(&url::Url::parse("https://other.example/topic").unwrap())
+                .await,
+            EndpointValidity::Ok
+        );
+        assert_eq!(
+            cfg.is_url_endpoint_valid(&url::Url::parse("https://push.example/topic?up=1").unwrap())
+                .await,
+            EndpointValidity::NotInConfig
+        );
+        assert_eq!(
+            cfg.is_url_endpoint_valid(&url::Url::parse("https://push.example/topic").unwrap())
+                .await,
+            EndpointValidity::NotInConfig
+        );
+
+        let wildcard_cfg = Config {
+            allowed_endpoints: vec![String::from("*")],
+            required_endpoint_queries: vec![String::from("https://8.8.8.8/?up=1")],
+            ..Config::default()
+        };
+        assert_eq!(
+            wildcard_cfg
+                .is_url_endpoint_valid(&url::Url::parse("https://8.8.8.8/topic").unwrap())
+                .await,
+            EndpointValidity::NotInConfig
+        );
+        assert_eq!(
+            wildcard_cfg
+                .is_url_endpoint_valid(&url::Url::parse("https://8.8.8.8/topic?up=1").unwrap())
+                .await,
+            EndpointValidity::Ok
+        );
+    }
+
+    #[test]
+    fn required_endpoint_query_rules_are_unambiguous_and_origin_only() {
+        assert!(parse_required_endpoint_query("https://push.example/?up=1").is_some());
+        for invalid in [
+            "https://push.example/",
+            "https://push.example/topic?up=1",
+            "https://push.example/?up=1&up=2",
+            "https://push.example/?=1",
+            "https://user:password@push.example/?up=1",
+            "https://push.example/?up=1#fragment",
+            "ftp://push.example/?up=1",
+            "https://push.example:0/?up=1",
+        ] {
+            assert!(
+                parse_required_endpoint_query(invalid).is_none(),
+                "accepted query rule: {invalid}"
+            );
+        }
     }
 
     #[tokio::test]
