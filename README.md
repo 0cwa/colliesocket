@@ -165,6 +165,18 @@ To generate a new key, you can run this command `mollysocket vapid gen`. Or usin
 
 This value can be passed to mollysocket via a file, location given with `vapid_key_file` parameter, or directly in the `vapid_privkey` parameter. _The key file takes the precedence_.
 
+#### One key per server, and a new key with a new database
+
+The phone recognizes a server by its VAPID public key, not by its URL. A known key means "same server": the phone keeps its linked device and enrollment, even at a new address. A new key means "different server": the phone removes the old linked device and sets up a fresh one.
+
+So keep these rules:
+
+- **Give every server its own key.** Never copy a key to a second server, including a standby or fallback server. Two servers with one key look like one server to the phone.
+- **Generate a new key whenever you start with an empty database**, for example after deleting `db` or reinstalling without restoring it. With the old key, the phone believes this server still holds its registration, and its enrollment export fails with `same_epoch_conflict`.
+- **Keep the key only together with its database.** Moving both to a new host, or changing the hostname, needs no new key.
+
+After changing the key, scan the server's new link or QR code on the phone. The phone then replaces its linked device on its own.
+
 #### With docker-compose
 
 The easiest way to pass the VAPID key when using docker compose is to pass it with the `MOLLY_VAPID_PRIVKEY` environment variable. See [docker-compose.yml](docker-compose.yml).
@@ -224,7 +236,7 @@ Scanning a QR code displayed on a dark theme currently doesn't work, so turn on 
 
 * **How to backup VAPID key?**
 
-MollySocket is designed for self-hoster, and the idea is to renew the VAPID key if you have to reinstall MollySocket somewhere else. If you are asking for this, you are probably trying to use systemd-creds, else you'd have the VAPID private key in plain text.
+MollySocket is designed for self-hoster, and the idea is to renew the VAPID key if you have to reinstall MollySocket somewhere else. Back up the key only together with the database; a restored key with an empty database confuses the phone (see [One key per server](#one-key-per-server-and-a-new-key-with-a-new-database)). If you are asking for this, you are probably trying to use systemd-creds, else you'd have the VAPID private key in plain text.
 
 If you haven't generated the VAPID key yet, just pipe the command to a temporary file: `mollysocket vapid gen | tee key.tmp | systemd-creds encrypt --name=ms_vapid -p - -`, key.tmp will contain the key, you can store it in a safe and remove the file.
 
