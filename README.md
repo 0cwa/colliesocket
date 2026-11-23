@@ -2,95 +2,38 @@
 
 CollieSocket is a downstream of [MollySocket](https://github.com/mollyim/mollysocket).
 It preserves upstream history, attribution, the `mollysocket` executable and
-useful `MOLLY_` configuration compatibility. Encrypted UnifiedPush development is
-on `work/encrypted-push-v1`; the canonical interface and synthetic fixtures are in
-[contracts/encrypted-push/v1](contracts/encrypted-push/v1/README.md).
+`MOLLY_` configuration compatibility.
 
-The previously reported local checkpoint was never published and was lost in an
-execution-workspace reset. [Recovery history](handoff/reconstruction-v1.json)
-identifies those unavailable historical commits. The reconstructed checkpoint
-has new commits and fresh evidence; it does not inherit previous test results.
-Only a published READY handoff authorizes consumers to pin the shared contract.
+Use the [server operator guide](docs/encrypted-push-server-v1.md) for private
+enrollment, migration and rollback, and the [image guide](docs/IMAGE.md) for the
+pinned build and CI interface. Encrypted enrollments use protected private
+imports, loopback readiness and no plaintext fallback. Legacy wake mode is
+disabled by default. The upstream setup instructions below do not configure
+private encrypted enrollment.
 
-The encrypted candidate uses protected private enrollment, keeps readiness on
-loopback and disables legacy wake mode by default. Upstream release installation
-and web pairing instructions retained below do not configure this candidate.
-The versioned runtime contract takes precedence on this work branch.
-
-The [published READY handoff](handoff/parallel-start-v2.json) pins the shared
-contract. Use the [server operator guide](docs/encrypted-push-server-v1.md) for
-private imports, migration and rollback, and the [image guide](docs/IMAGE.md)
-for the pinned local build and CI interface. Server candidate manifests under
-[`handoff/`](handoff/) record exact implementation pins and separate PASS from
-NOT RUN gates. Android, physical-device, deployment and shipping security
-acceptance are separate from the local synthetic server checks.
+The versioned interfaces and synthetic fixtures are maintained under
+[contracts/encrypted-push](contracts/encrypted-push): [v1](contracts/encrypted-push/v1/README.md),
+[v2](contracts/encrypted-push/v2/README.md) and [v3](contracts/encrypted-push/v3/README.md).
+Consumers pin the applicable contract at an exact commit. Database migration
+does not upgrade an enrollment's negotiated protocol version.
 
 ## Endpoint updates over Signal
 
-[Enrollment v2](contracts/encrypted-push/v2/README.md) lets a compatible Collie IM
-phone update its push endpoint and encryption keys through Signal. CollieSocket
-can stay behind NAT with no public enrollment port. The phone generates a
-separate 32-byte control key and includes it in a protected version-2 enrollment
-file. Import that file locally as the service account:
-
-```sh
-mollysocket enrollment import --file /private/path/enrollment-v2.json
-```
-
-The file must have mode `0600`; keep it private because it contains the linked
-device password, endpoint and control key. Keyed v2 enrollments advertise event
-versions `[1,2]` and receive version-2 encrypted pushes. Existing version-1
-imports and version-2 imports without a control key retain version-1 behavior.
-Upgrading an existing enrollment requires a new private import at the next
-subscription epoch. Database migration to schema 4 is automatic. Before
-upgrading, stop the service and back up its private database. Older binaries
-reject the migrated database; rollback requires the older binary and its
-matching pre-upgrade backup. Keep the latest database for recovery because
-restoring a backup discards later enrollment and queue changes.
-
-Every state-changing private import also replaces an internal enrollment
-generation. This revokes callbacks from older Signal sockets, even if the
-password and endpoint are unchanged or later return to earlier values. Signal
-endpoint updates and idempotent imports retain that generation.
-
-For later endpoint or key changes, the phone sends a dedicated non-urgent sync
-message to its own account. Only the CollieSocket device's copy contains the
-encrypted update. CollieSocket validates it, saves the new subscription and
-queues an encrypted confirmation before acknowledging Signal. The phone keeps
-retrying the same update until it receives that confirmation at the new endpoint
-and epoch. A newer valid update can recover a stale push subscription; forged
-updates and old replays cannot change it. Password, control-key and account
-changes still require private import. The configured destination restrictions
-continue to apply to every update and push attempt.
-
-The [v2 contract](contracts/encrypted-push/v2/README.md) specifies the exact wire
-format, phone behavior, replay rules and synthetic checks. It is additive to the
-frozen v1 contract. The [v2 operator guide](docs/encrypted-push-v2.md) covers
-database migration, control-key rotation, confirmation recovery and superseding
-an unconfirmed endpoint change.
+Keyed v2 and v3 enrollments let a compatible phone update its endpoint and
+push encryption keys through Signal without a public enrollment port. Use the
+[v2 operator guide](docs/encrypted-push-v2.md) for confirmation and recovery, and
+the [v3 contract](contracts/encrypted-push/v3/README.md) for ordered private imports
+and their acknowledgment. Password, control-key and account changes still
+require private import.
 
 ## Repository boundaries
 
-ChatGPT moved the desktop/Android application planning to
-[Collie Pack](https://github.com/0cwa/collie-pack/tree/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd),
-the project previously called collie-fetch. Its
-[current product record](https://github.com/0cwa/collie-pack/blob/d4dc22dfe1917e3a4d599e7d3b4d4e1215fffefd/handoff/product-direction-v3.json)
-owns the Tauri GUI, provider/distributor integration, native notifications,
-local/LAN/tunnel modes, application packaging, deployment and combined tests.
-Those application components remain implementation work.
-
-CollieSocket owns the Signal-facing sender, Rust service/library API,
-encryption, enrollment, outbox, canonical contracts, server tests and server
-build recipe. The existing library boundary preserves the `mollysocket` CLI;
-`run_cli()` is CLI-only. A restartable API for embedding remains server work.
-The [library evidence](evidence/library-boundary-v1/results.json) retains its
-original source and validation scope.
-
-The [repository split receipt](handoff/repository-split-v1.json) records the
-verified transfer and current routing. Frozen contract and candidate records
-keep their original bytes, including historical project names. The
-[current server PR draft](handoff/pr-draft-v3.md) targets this repository's
-`main` from `work/encrypted-push-v1`; the Collie Pack PR is separate.
+CollieSocket owns the Signal-facing sender, encryption, enrollment, outbox,
+versioned contracts, server tests and build recipe. Companion applications and
+deployment integration belong to [Collie Pack](https://github.com/0cwa/collie-pack).
+The library's [`run_cli()`](src/lib.rs) entry point remains CLI-only; it is not a
+restartable API for embedding in a GUI. Historical handoff and evidence records
+remain under `handoff/`, `evidence/` and `provenance/`.
 
 ## Upstream MollySocket documentation
 
