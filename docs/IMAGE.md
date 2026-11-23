@@ -1,36 +1,16 @@
 # CollieSocket test image and CI
 
-`Containerfile.colliesocket` implements the frozen
-[`encrypted-push/v1` runtime](../contracts/encrypted-push/v1/runtime.md).
-It preserves MollySocket's executable/configuration interface and upstream
-AGPL attribution. This is a reproducible candidate build recipe, not a
-production release or evidence of Android delivery.
+[`Containerfile.colliesocket`](../Containerfile.colliesocket) builds CollieSocket
+with MollySocket's executable/configuration interface and upstream AGPL
+attribution. It produces a local candidate; building it does not establish
+production readiness or Android delivery.
 
-## Current evidence
+## Pinned build inputs
 
-Local Docker and podman executables are unavailable. **Image build, image
-execution, and both architecture smoke tests are NOT RUN in this workspace.**
-No built-image digest is claimed. The committed
-[`local-validation.json`](../images/local-validation.json) records source,
-syntax, workflow and registry-pin checks separately. No Actions execution was
-observed when the checkpoint was published; later CI results must be assessed
-at their actual source commit.
-
-[`base-pins.json`](../images/base-pins.json) and `images/registry-manifests/`
-contain public, exact registry index bytes and their SHA-256 values. The raw
-bytes were fetched from Docker's registry over verified HTTPS and matched its
-`Docker-Content-Digest` header. Linux amd64/arm64 child entries were inspected;
-this does not establish that either image was pulled, built or executed.
-
-| Input | Fixed selection |
-| --- | --- |
-| Rust builder | `rust:1.90.0-bookworm`, digest pinned in the recipe |
-| Runtime | `debian:bookworm-slim`, digest pinned in the recipe |
-| Dockerfile frontend | `docker/dockerfile:1.7.1`, digest pinned |
-| BuildKit daemon | `moby/buildkit:v0.34.2`, digest pinned in CI |
-| Buildx | `v0.38.2`; official release digest metadata recorded |
-| Source/dependencies | Exact Git source commit, Rust 1.90.0, Cargo.lock and `--locked` |
-| Intended platforms | `linux/amd64`, `linux/arm64`; no arm/v7 promise |
+[`base-pins.json`](../images/base-pins.json) records the builder, runtime,
+Dockerfile frontend, BuildKit, Buildx and action pins. The retained registry
+manifests bind the index digests and intended `linux/amd64` and `linux/arm64`
+platforms. Pin checks verify those inputs; they do not build or execute an image.
 
 The builder's reviewed non-glibc linked libraries are copied under their
 SONAMEs into `/usr/local/lib/colliesocket`. The runtime retains its complete
@@ -43,15 +23,13 @@ bundle and OpenSSL configuration. No floating apt install or full-upgrade is
 used. Pinned inputs require reviewed maintenance; this is not a vulnerability
 audit or shipping-security approval.
 
-The image's `AGPL-3.0-or-later` label matches the upstream Cargo manifest at
-`f1e10c97d4644df4d326b9d7dedb160b297d41ca`; `LICENSE.txt` and the adapted
-sender-helper MIT attribution are included. OCI labels identify the canonical
-source repository and exact source commit.
+The image includes `LICENSE.txt` and the sender-helper MIT attribution. OCI
+labels identify the AGPL license, canonical repository and exact source commit.
 
 ## Reproduce a local candidate
 
-Use the source commit named by the candidate manifest on a Linux host with
-Docker/Buildx and Python 3. The build script requires a clean committed checkout,
+Check out the reviewed source commit on a Linux host with Docker/Buildx and
+Python 3. The build script requires a clean committed checkout,
 archives that exact commit, and executes the recipe and evidence helpers from
 the archive. Working-tree changes made during a build cannot silently change
 its recorded recipe. Output must be outside the checkout and cannot overwrite
@@ -83,23 +61,12 @@ Cargo's network step. TLS verification remains enabled, and this CA is not
 copied into the image. Registry pulls still use the local daemon's configured
 network and trust settings.
 
-The underlying interface remains:
-
-```sh
-docker buildx build --load --platform linux/amd64 \
-  -f Containerfile.colliesocket \
-  --build-arg SOURCE_COMMIT="$(git rev-parse HEAD)" \
-  --build-arg SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
-  -t colliesocket:test .
-```
-
-The helper additionally exports a local Docker archive with timestamp rewriting,
+The helper exports a local Docker archive with timestamp rewriting,
 loads it locally, writes selected build metadata, and runs the isolated smoke
 test by immutable image ID. It never pushes an image. `SOURCE_DATE_EPOCH` is the
 source commit's timestamp, gzip suppresses its own timestamp, and the build
-context comes from `git archive`. These controls make reproduction actionable;
-byte-for-byte repeated image reproduction remains NOT RUN until two actual
-builds are compared. See BuildKit's pinned
+context comes from `git archive`. Byte-for-byte reproducibility requires
+comparing two actual builds. See BuildKit's pinned
 [reproducibility documentation](https://github.com/moby/buildkit/blob/v0.34.2/docs/build-repro.md).
 
 Successful output contains:
@@ -150,38 +117,33 @@ empty destination allowances and staging Signal selection. Containers use
 `no-new-privileges`. It verifies UID, private directory/database/config modes,
 the alias, migration, read-only secrets, loopback readiness, Docker health, and
 absence of mapped host ports. It attempts cleanup of all its named objects even
-after a timed-out CLI call. It does not create production identities or run
-Orchestrator 3's deployment/combined-system tests.
+after a timed-out CLI call. It does not create production identities or test
+real Signal, provider or device delivery.
 
-Migration and rollback remain governed by the frozen runtime: stop before a
+Migration and rollback follow the frozen
+[runtime contract](../contracts/encrypted-push/v1/runtime.md): stop before a
 complete protected backup; upgrade transactionally; roll back the binary and
 matching database backup together. An old binary must not open an upgraded live
 database. After restore, disable sending and privately re-enroll with fresh
 receiver keys/instance before resuming. Never use the image workflow as an
 automatic database rollback mechanism.
 
-## CI and ownership
+## CI
 
-The original C0 `contract` job remains intact. Added `server` and `image` jobs
-run on work-branch pushes, pull requests and manual workflow dispatches. The
-server job checks formatting, locked unit tests, public image pins and the real
-synthetic CLI/loopback-provider test with independent decryption. A separate
-`signal` job exercises the fake TLS Signal websocket through an encrypted push
-and checks that a release built with all features and debug assertions contains
-no test URL or CA override. The default server build also checks that overrides
-are absent. The image jobs wait for both server and Signal checks, build and
-smoke-test both architectures, and retain local archives and redacted
-results for one day. They have read-only repository permissions, no registry
-login/push, no secrets, and no release/deployment step.
+[`test.yml`](../.github/workflows/test.yml) runs on pull requests, manual
+workflow dispatches and pushes to `work/encrypted-push-v1`. Its contract job
+checks the versioned contracts and independent sender fixtures. The server job
+checks formatting, locked unit tests, image pins and synthetic CLI/provider
+behavior; the Signal job checks fake-TLS websocket delivery and the absence of
+test URL/CA overrides from release builds.
 
-The added jobs run only for a public repository and use the standard
-`ubuntu-24.04` and `ubuntu-24.04-arm` labels. GitHub documents these as
-[standard public-repository runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories),
-whose use is free; no larger runner is selected. All used actions are full
-commit pins recorded in `images/base-pins.json`. The inherited release/cron jobs
-remain guarded to `github.repository == 'mollyim/mollysocket'`.
+The server, Signal and image jobs require a public repository. Image builds wait
+for both server and Signal checks, use native amd64/arm64 runners, and retain
+local archives and redacted results for one day. They have read-only repository
+permissions and no registry login, image push, release or deployment step.
+The inherited release and cron workflows remain restricted to
+`mollyim/mollysocket`.
 
-An absent Actions run is NOT RUN, not PASS. This lane does not change repository
-settings to enable workflows. Orchestrator 1 owns the image and server CI;
-Orchestrator 3 chooses deployment and combined-system checks against explicit
-candidate pins.
+Assess each run at its actual source commit. A missing run supplies no build or
+smoke evidence, and passing image checks do not replace deployment or device
+acceptance.
