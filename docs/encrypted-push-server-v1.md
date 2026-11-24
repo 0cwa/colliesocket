@@ -83,7 +83,9 @@ The image interface uses UID/GID `10001:10001`, state directory
 `/var/lib/colliesocket/mollysocket.db` with mode 0600. Config and optional VAPID
 key files belong to the service account, use mode 0600, and are mounted read-only
 under `/run/secrets/colliesocket`. Protect backups and SQLite sidecars as secrets
-too. The store rejects unsafe ownership, permissions, symlinks, and hard links;
+too. Back up and restore the VAPID key together with the database, never on
+its own: the phone treats a known key as a server that still holds its
+registration (see the [README](../README.md#one-key-per-server-and-a-new-key-with-a-new-database)). The store rejects unsafe ownership, permissions, symlinks, and hard links;
 it does not silently widen permissions or downgrade a future schema. See
 [`src/push_store.rs`](../src/push_store.rs) and the
 [state and migration contract](../contracts/encrypted-push/v1/runtime.md#state-secret-permissions-and-migrations).
