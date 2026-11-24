@@ -1,57 +1,33 @@
-# Operating the CollieSocket encrypted-push v1 candidate
+# Operating CollieSocket encrypted push
 
-For canonical enrollment-v2 servers and database migration, use the
-[v2 operator guide](encrypted-push-v2.md) alongside this v1 reference.
+This guide covers common server operations and v1 private enrollment. Use the
+[v2 operator guide](encrypted-push-v2.md) for Signal endpoint updates and the
+[v3 contract](../contracts/encrypted-push/v3/README.md) for ordered private-import
+intent and confirmation. The current server supports all three versions;
+database migration preserves each enrollment's negotiated event version.
 
-This guide covers the server candidate and its protected local operator interface.
-Start with [`handoff/parallel-start-v2.json`](../handoff/parallel-start-v2.json)
-for the published contract pin, fixture-manifest hash, ownership, and launch
-evidence. The server candidate manifest published under `handoff/` supplies the
-separate implementation source pin, build recipe/digest, executed tests, and
-remaining gaps. An absent candidate manifest means candidate acceptance has not
-been recorded. A READY parallel-start checkpoint permits the other workstreams
-to begin; it is not production, Android, or deployment acceptance.
-
-| Published parallel-start identity | Exact value |
-| --- | --- |
-| Contract C0 | [`0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f`](https://github.com/0cwa/colliesocket/commit/0bb7a6c1e1cc66c83b366117e0ceb9b9934aeb8f) |
-| READY handoff H0 | [`a58a46e278efdb89f9e6fd46d6b9556189a636eb`](https://github.com/0cwa/colliesocket/commit/a58a46e278efdb89f9e6fd46d6b9556189a636eb) |
-| Fixture-manifest SHA-256 | `226bff31ca34b23e411929812ab86105ee970d0aab84848b1b53b18edff21568` |
-
-Fetch the published `work/encrypted-push-v1` branch and verify the full pins.
-Later server commits do not change this contract identity.
-
-The authoritative interfaces are the frozen [protocol](../contracts/encrypted-push/v1/protocol.md),
+The frozen [v1 protocol](../contracts/encrypted-push/v1/protocol.md),
 [runtime contract](../contracts/encrypted-push/v1/runtime.md), and
-[schemas and fixtures](../contracts/encrypted-push/v1/README.md). This guide does
-not revise them. Later behavior changes require a new contract version and
-consumer-selected pins.
+[schemas and fixtures](../contracts/encrypted-push/v1/README.md) remain the
+authoritative v1 interfaces. Later behavior uses separately versioned contracts.
 
 ## What the server does
 
-The server sends `wake`, `test`, and the two defined generic `status` events as
-RFC 8291 `aes128gcm` binary bodies. Serialized event JSON is limited to 3072
-UTF-8 bytes, padded inside the plaintext to 3993 bytes, and encrypted into a
-4096-byte standard frame. HTTP POST, optional VAPID authorization, and payload
+V1 sends `wake`, `test`, and generic `status` events using the frozen RFC 8291
+`aes128gcm` format. HTTP POST, optional VAPID authorization, and payload
 encryption remain separate. No Topic header or clear event/account metadata is
 added. A provider's 2xx response records provider acceptance; it does not prove
-device receipt, decryption, or application work. See
-[`src/push.rs`](../src/push.rs),
-[`src/utils/post_allowed.rs`](../src/utils/post_allowed.rs), and
-[`crates/colliesocket-push/`](../crates/colliesocket-push/).
+device receipt, decryption, or application work.
 
 V1 carries no message previews, sender/conversation identifiers, Signal message
-bodies, or new Signal decryption keys. It makes no assumption that another
-linked device's Signal ciphertext can be consumed by Collie. Richer content
-has no enabling flag. The receiving Android application must pass its separate
-connector, durable replay, and lock-transition gates before release use. The
-current source audit and ownership boundary are recorded in
-[`source-audit.md`](../contracts/encrypted-push/v1/source-audit.md).
+bodies, or new Signal decryption keys. Richer content has no enabling flag.
+Receiver and deployment acceptance require their own evidence; local sender
+checks establish only the behavior they exercise.
 
 ## Prepare an isolated local check
 
-Use the exact source commit selected by the server candidate manifest and
-Rust 1.90.0. From the repository root, the independent local checks are:
+Use the selected source commit and the Rust toolchain pinned in
+[`rust-toolchain.toml`](../rust-toolchain.toml). From the repository root:
 
 ```sh
 cargo build --locked
@@ -62,8 +38,6 @@ sh crates/colliesocket-push/tools/conformance.sh
 python3 tests/server_cli.py
 ```
 
-These are reproduction commands, not a claim that every command has passed for
-every later source commit. Consult the candidate manifest for actual results.
 [`tests/server_cli.py`](../tests/server_cli.py) creates protected temporary state
 and a synthetic loopback provider, invokes the real CLI/worker with
 `push_only=true`, and independently decrypts captured bodies with the
@@ -83,14 +57,10 @@ names and precedence are implemented in [`src/config.rs`](../src/config.rs).
 
 ### Fake Signal websocket
 
-The separate [Signal end-to-end test](../tests/signal_e2e.py) runs the real server
-with `push_only=false` against a local TLS websocket and a local push provider.
-It sends Signal protobuf envelopes, checks their acknowledgements, and
-independently decrypts the resulting encrypted `wake` push. This covers the
-Signal-to-worker path in addition to the CLI checks above.
-Non-waking inputs are followed by another acknowledged envelope before the
-test checks the durable event ledger, so a stalled websocket or a quickly
-discarded queue entry cannot make a suppression check pass.
+[`tests/signal_e2e.py`](../tests/signal_e2e.py) runs the real server with
+`push_only=false` against a local TLS websocket and push provider. It checks
+Signal envelope acknowledgements and independently decrypts the resulting pushes.
+The test creates protected state, synthetic enrollment and a temporary CA.
 
 ```sh
 cargo test --locked --features test-signal
@@ -100,28 +70,11 @@ CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true cargo build --locked --release --all
 python3 tests/check_signal_overrides_absent.py --binary target/release/mollysocket
 ```
 
-The `test-signal` feature is off by default. Only development-profile builds
-with that feature and debug assertions accept `test_signal_url` and
-`test_signal_ca`, or their
-`MOLLY_TEST_SIGNAL_URL` and `MOLLY_TEST_SIGNAL_CA` environment equivalents. Both
-must be provided together: a `wss` URL with a loopback IP address and a PEM CA
-file. The CA must be a regular file owned by the current user, with mode 0600,
-one hard link, and at most 16 KiB; symlinks and special files are rejected.
-The fake's CA replaces the pinned Signal root for that test process;
-certificate and hostname verification stay enabled. The test creates its own
-temporary CA, certificate, protected state, and synthetic enrollment.
-
-Normal debug builds and all release-profile builds exclude the override fields
-and TLS selection code, even when release debug assertions are enabled.
-The absence checker inspects the executable and verifies that
-test configuration and environment settings have no effect. CI checks the
-default debug executable and a release built with `--all-features` and debug
-assertions enabled.
-
-[`tests/fake_signal.py`](../tests/fake_signal.py) contains the reusable fake
-websocket and envelope helpers for further Signal-driven integration tests,
-including endpoint updates. These tests do not require live Signal credentials
-or a real distributor, and provider acceptance does not establish device delivery.
+Only development-profile builds with `test-signal` and debug assertions accept
+the paired loopback `test_signal_url` and protected `test_signal_ca` settings.
+Normal debug and all release-profile builds exclude those overrides. The
+[absence checker](../tests/check_signal_overrides_absent.py) verifies this boundary;
+[`src/config.rs`](../src/config.rs) defines the exact restrictions.
 
 ## Configure state and destinations
 
@@ -161,7 +114,7 @@ cannot bypass those checks. See [`src/config.rs`](../src/config.rs) and
 
 ## Import through a private authenticated channel
 
-The examples use an installed candidate executable named `mollysocket`. For a
+The examples use an installed executable named `mollysocket`. For a
 local debug build, invoke `./target/debug/mollysocket` instead; building with
 Cargo does not install the executable onto PATH.
 
@@ -174,17 +127,10 @@ registration route. Public discovery does not carry a registration QR or key
 material. See [`src/enrollment.rs`](../src/enrollment.rs) and
 [`src/server/web.rs`](../src/server/web.rs).
 
-The protected JSON file must match
-[`enrollment.schema.json`](../contracts/encrypted-push/v1/enrollment.schema.json):
-
-| Fields | Required source and behavior |
-| --- | --- |
-| `enrollment_version`, `request_id` | Version 1 and a new canonical lowercase UUIDv4 for this operation |
-| `account_id`, `device_id`, `password` | Existing account/device credentials; device ID 2..2147483647 and 16..256 printable ASCII password bytes |
-| `subscription.endpoint`, `p256dh`, `auth` | Receiver subscription; canonical unpadded base64url P-256 public point and confidential 16-byte auth secret |
-| `subscription.instance`, `subscription_epoch` | Receiver-agreed instance and durable epoch; a new local lifecycle begins at 1 |
-| `encryption_required` | Exactly `true`, inside `subscription` |
-| `supported_event_versions`, `capabilities` | Exactly `[1]` and `["wake","test","status"]`, inside `subscription` |
+The protected v1 JSON export must match the frozen
+[`enrollment.schema.json`](../contracts/encrypted-push/v1/enrollment.schema.json).
+A new local registration starts at epoch 1. Use the receiver's export rather than
+editing credentials, keys or negotiated versions by hand.
 
 Unknown fields, duplicate property names, unexpected nulls, invalid UTF-8,
 floating-point spellings in integer fields, malformed keys, and inputs over
@@ -249,9 +195,9 @@ test Signal, Android, the distributor, or delivery. See
 
 ## Rotation, stale endpoints, and bounded recovery
 
-An endpoint, P-256 key, auth secret, instance, or credential change requires a
-new request ID and exactly the current epoch plus one. This includes same-URL
-key rotation. Obtain the new tuple from the receiver's durable enrollment flow;
+For a v1 enrollment, an endpoint, P-256 key, auth secret, instance, or credential
+change requires a new request ID and exactly the current epoch plus one. This
+includes same-URL key rotation. Obtain the new tuple from the receiver's durable enrollment flow;
 do not arbitrarily choose or skip epochs. The store changes credentials,
 subscription, and pending-event state in one transaction. Late old ciphertext
 can still arrive and must fail the receiver's key/instance/epoch checks. Signal
@@ -280,24 +226,21 @@ registration, receipt, and queue state without calling a Signal unlink API.
 Use removal only as an intentional lifecycle operation, not routine retry.
 See [`src/push_store.rs`](../src/push_store.rs) and [`src/db.rs`](../src/db.rs).
 
-The fixed limits are 16 queued events per account, 4096 queued events globally,
-8192 retained server event IDs, 4096 registrations, and 1024 accepted request IDs
-per registration lifetime. Events expire after at most 300 seconds. Each claim
-persists its attempt before I/O and leases it for 30 seconds. There are at most
-four attempts, with 5/30/120-second retry delays and bounded Retry-After handling.
-These bounds can deliberately drop work during outages. The receiver recovers
-through its normal authenticated Signal fetch; provider acceptance is not an
-acknowledgment from that receiver. See the
-[queue and recovery rules](../contracts/encrypted-push/v1/protocol.md#durable-queue-and-provider-recovery).
+Queue capacity, event lifetime, attempts and retry timing are bounded by the
+[frozen queue and recovery rules](../contracts/encrypted-push/v1/protocol.md#durable-queue-and-provider-recovery).
+These limits can deliberately drop work during outages. The receiver recovers
+through its normal authenticated Signal fetch.
 
 ## Migration and rollback
 
-Migration adds schema 2 encrypted state while retaining upstream connection
-columns. Existing connections are preserved, but legacy wake sending remains
-disabled unless explicitly enabled for a bounded period. Opening state with
-the candidate can apply migrations automatically, including from server startup
-or a CLI command; complete the backup before the candidate first opens an
-existing database. Before migration:
+The current store uses **schema 5**, defined by
+[`SCHEMA_VERSION` in `src/push_store.rs`](../src/push_store.rs). Migration preserves
+existing connections and v1/v2 enrollments; it does not negotiate v3 or enable
+Signal control for an unkeyed enrollment. Legacy wake sending remains disabled
+unless explicitly enabled for a bounded period.
+
+Server startup and CLI commands can apply migrations when opening state.
+Complete the backup before the new binary first opens an existing database:
 
 1. Stop the server and any concurrent CLI drain/import processes. Confirm they
    have exited before handling state files.
@@ -306,13 +249,13 @@ existing database. Before migration:
    stopped database. Do not copy only the main file from an active WAL database.
 3. Verify service ownership, parent mode 0700, and DB/sidecar mode 0600. Existing
    unsafe paths fail closed; migration is not a permission-repair command.
-4. Run the selected candidate's `migrate` command under the service account.
-   Check the successful `{"schema_version":4}` response, then private readiness
-   and the candidate's synthetic smoke checks before considering real use.
+4. Run the selected binary's `migrate` command under the service account.
+   Check the successful `{"schema_version":5}` response, then private readiness
+   and the selected revision's synthetic smoke checks before considering real use.
 
 The implementation rejects future schema versions and rolls back interrupted
 transactions. It offers no destructive down migration. Rollback is an offline
-operation: stop all writers, quarantine the failed candidate state privately,
+operation: stop all writers, quarantine the failed upgrade state privately,
 and restore the previous binary **and its matching pre-migration backup**.
 Never let the old binary open the upgraded live DB. Do not treat changing
 `user_version` or dropping tables as rollback. These requirements come from
@@ -323,11 +266,13 @@ A restore can revive old epochs, request receipts, queued events, or replay
 clocks. Keep affected sends disabled. Before resuming encrypted sends, privately
 establish fresh receiver keys/auth and a fresh instance, then follow the
 restored store's valid enrollment lifecycle: epoch 1 only for a new local
-registration, otherwise exactly its next epoch. Coordinate receiver acceptance
-with the server; do not reuse an old receipt as recovery evidence. An older
-binary that cannot enforce v1 must not resume these subscriptions in plaintext.
+registration, otherwise exactly its next epoch. For keyed enrollments, these
+state-changing imports also require a fresh control key; v3 recovery must follow
+its retained import-sequence rules. Coordinate receiver acceptance with the
+server; do not reuse an old receipt as recovery evidence. An older binary that
+cannot enforce v1 must not resume these subscriptions in plaintext.
 
-## Legacy compatibility and image evidence
+## Legacy compatibility
 
 Legacy wake mode is explicit and expires at a fixed `legacy_wake_until` deadline
 no more than 24 hours ahead at startup. It sends only `{"urgent":true}` with
@@ -338,46 +283,6 @@ rotation. The HTTP-registration route and URL QR flow remain disabled. See
 [`src/ws/signalwebsocket.rs`](../src/ws/signalwebsocket.rs), and the
 [compatibility policy](../contracts/encrypted-push/v1/protocol.md#errors-and-compatibility).
 
-The frozen image interface is `Containerfile.colliesocket`, with intended
-targets `linux/amd64` and `linux/arm64`. Use the recipe at the candidate's exact
-source pin and the [runtime build command](../contracts/encrypted-push/v1/runtime.md#reproducible-candidate-image-interface).
-No public registry publication is necessary. A recipe hash, a successful Cargo
-build, or a local image tag is not a built-image digest. Until the candidate
-manifest records an executed image build and its digest, that build is NOT RUN.
-Architecture and runtime checks are reported individually.
-
-## Provenance and acceptance gates
-
-Upstream MollySocket history, AGPL attribution, and useful configuration/CLI
-names are retained; see [`Cargo.toml`](../Cargo.toml), [`LICENSE.txt`](../LICENSE.txt),
-and the [source audit](../contracts/encrypted-push/v1/source-audit.md). Earlier
-unpublished local commit objects were unavailable after workspace loss. This
-reconstruction has new hashes and fresh evidence; it is not a recovery of the
-old objects and inherits no historical PASS result. The reconstruction record
-is [`handoff/reconstruction-v1.json`](../handoff/reconstruction-v1.json).
-
-Authored source bundles and their records preserve the established
-`0cwa <0@none.org>` patch author and upstream attribution. Canonical GitHub API
-transport commits can carry a different author/committer identity. Use the
-recorded bundle digest and source-to-transport mapping from the handoff/candidate
-provenance; do not claim those identities are identical or fabricate signatures
-or signoffs. Source attribution and publication transport are recorded
-separately. The published checkpoint has dedicated
-[contract provenance](../provenance/encrypted-push/contract-v1-reconstructed.json)
-and [handoff provenance](../provenance/encrypted-push/parallel-start-v2.json)
-records, each naming its exact authored bundle.
-
-| Gate | Evidence required before claiming PASS |
-| --- | --- |
-| Shared checkpoint | Fetchable C0/H0, verified immutable fixture manifest, freshly executed sender/vector checks |
-| Server candidate | Exact source pin; locked unit, negative, migration, CLI, and transport results; redacted artifacts |
-| Independent decryption | Published-vector and Rust ciphertext accepted by the independent Python/OpenSSL checker |
-| Android acceptance | Actual connector decryption/failure behavior, durable replay and clock handling, same-URL rotation, lock transitions, and unlock recovery; owned by Orchestrator 2 |
-| Physical device/Keystore | Actual device evidence, separate from a reference model or fabricated decrypted callback |
-| Image/architecture | Actual image build/digest and runtime checks for each claimed architecture |
-| Deployment/distributor | Orchestrator 3's private readiness and combined delivery/reporting evidence against a real candidate |
-| Shipping security | Explicit review of enrollment authority, secret handling, recovery, and remaining accepted risks |
-
-The guide itself confers no PASS status. Missing devices, credentials, or image
-capabilities remain NOT RUN; they do not prevent independent local server work
-or the published parallel-start checkpoint.
+For pinned image builds, runtime permissions and packaging checks, use the
+[image guide](IMAGE.md). Record actual test and image results in the PR or release
+evidence for the exact source revision.

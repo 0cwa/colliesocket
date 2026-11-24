@@ -1,8 +1,7 @@
 # Operating enrollment v2 and endpoint updates
 
-This guide covers the enrollment-v2 implementation on CollieSocket `main`,
-introduced by [PR #11](https://github.com/0cwa/colliesocket/pull/11). It extends
-the [v1 operator guide](encrypted-push-server-v1.md). The authoritative wire
+This guide covers enrollment v2 and extends the
+[v1 operator guide](encrypted-push-server-v1.md). The authoritative wire
 format, schemas and interoperability vector are in the
 [v2 contract](../contracts/encrypted-push/v2/README.md); the frozen v1 contract
 continues to govern behavior that v2 does not change.
@@ -28,18 +27,12 @@ still apply to every update and subsequent push attempt.
    or image, configuration and a complete protected database backup before the
    new binary first opens state. Follow the ownership, sidecar and backup steps
    in the [v1 migration procedure](encrypted-push-server-v1.md#migration-and-rollback).
-2. Run `mollysocket migrate` with the service account and its configuration.
-   The original canonical v2 server from #11 reports `{"schema_version":3}`;
-   the schema-4 server follow-up in [PR #17](https://github.com/0cwa/colliesocket/pull/17)
-   reports `{"schema_version":4}`. Its migration from canonical schema 3 preserves
-   existing v1/v2 subscriptions, private-import and control replay receipts,
-   queued events and leases while adding an internal enrollment generation.
-
-   A schema-only upgrade from canonical schema 3 to 4 needs no new phone export
-   or private re-import. If retaining an existing enrollment, restart the service
-   after migration. Continue with steps 3–4 only when creating an enrollment or
-   enabling Signal control; the database upgrade does not activate control for a
-   v1 or keyless v2 enrollment.
+2. Run `mollysocket migrate` with the service account and its configuration;
+   the shared migration guide describes the current database schema. A
+   database-only upgrade preserves existing enrollment and event negotiation and
+   needs no new phone export. Restart the service if retaining that enrollment.
+   Continue with steps 3–4 only when creating an enrollment or enabling Signal
+   control. Migration alone neither enables control nor adopts v3.
 3. When creating an enrollment or enabling control, export enrollment v2 from a
    compatible phone. A new enrollment starts at epoch
    1; enabling control on an existing enrollment requires a private import at the
@@ -60,20 +53,17 @@ control key. Only an idempotent import of unchanged active state may reuse the
 current key. Restoring or replacing phone state also requires fresh receiver
 keys, instance and control key through private enrollment before sending resumes.
 
-With schema 4, every state-changing private import also replaces the internal
-generation, including keyless imports. This revokes callbacks from older Signal
+Every state-changing private import also replaces the internal generation,
+including keyless imports. This revokes callbacks from older Signal
 sockets even when their password and endpoint are unchanged or later restored.
 Control updates, exact replays and idempotent private imports retain that
 generation. This local protection does not change the v2 wire format or replace
 the fresh-control-key requirement.
 
-Older binaries must use their matching pre-migration backup. Do not lower
-SQLite's `user_version` or remove columns to make an old binary open current
-state. Preserve the latest database for recovery: restoring a backup discards
-subsequent local enrollment and queue changes. The alternative proposal in
-[PR #15](https://github.com/0cwa/colliesocket/pull/15) uses schema number 3 but has
-a different database layout and wire protocol from canonical #11. It is not an
-interchangeable binary or a supported source for the canonical schema-4 migration.
+For v3 adoption, follow the [v3 compatibility and import rules](../contracts/encrypted-push/v3/README.md#explicit-negotiation-and-compatibility).
+A row with a retained v3 sequence floor rejects fresh v1/v2 imports. An exact
+recorded legacy request may return its saved receipt without changing the row;
+that historical receipt does not confirm current enrollment.
 
 ## Confirmation, retries and a second endpoint change
 
