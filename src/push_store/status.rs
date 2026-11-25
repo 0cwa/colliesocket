@@ -1,7 +1,7 @@
 //! Read-only projection of local registration metadata for the CLI.
 use super::{
-    protected_state_file, row_epoch, valid_instance, verify_connection_schema, AccountState,
-    Result, StoreError, SCHEMA_VERSION,
+    protected_state_file, row_epoch, state_parent, valid_instance, verify_connection_schema,
+    AccountState, Result, StoreError, SCHEMA_VERSION,
 };
 use rusqlite::{Connection, OpenFlags, Row};
 use serde::Serialize;
@@ -51,8 +51,15 @@ pub(crate) fn read(path: &Path, account: Option<&str>) -> Result<Vec<Registratio
     // Close the preflight descriptor before SQLite takes its POSIX locks.
     drop(file);
 
+    // A relative name starting with `file:` would be interpreted as a URI.
+    // Resolve symlinked ancestors while keeping NOFOLLOW on the database file.
+    let filename = path.file_name().ok_or(StoreError::UnsafeStatePath)?;
+    let sqlite_path = state_parent(path)
+        .canonicalize()
+        .map_err(|_| StoreError::UnsafeStatePath)?
+        .join(filename);
     let mut db = Connection::open_with_flags(
-        path,
+        sqlite_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     let snapshot = db.transaction()?;
@@ -156,7 +163,10 @@ fn encrypted_versions(
 }
 
 fn endpoint_origin(endpoint: &str) -> Option<String> {
-    let (_, tail) = endpoint.split_once("://")?;
+    let (scheme, tail) = endpoint.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
     // The URL parser can repair a missing authority or treat a backslash as
     // a separator. Never turn text from a malformed endpoint into a host.
     if tail.starts_with(['/', '?', '#'])
@@ -168,9 +178,7 @@ fn endpoint_origin(endpoint: &str) -> Option<String> {
         return None;
     }
     let url = url::Url::parse(endpoint).ok()?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.port_or_known_default().is_none_or(|p| p == 0)
-    {
+    if url.port() == Some(0) {
         return None;
     }
     Some(url.origin().ascii_serialization())
@@ -199,6 +207,7 @@ mod tests {
             "not-a-url",
             "ftp://example.test/path",
             "https:///path-secret",
+            "https:/path-secret/redirect://example.test",
             "https://?query-secret",
             "https://example.test:0/path",
             "https://example.test\\path",

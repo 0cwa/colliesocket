@@ -315,7 +315,7 @@ class Harness:
                 for path in database.parent.iterdir()
             }
 
-        def report():
+        def report(config=config):
             before = snapshot_files()
             sent = self.provider.count
             result = self.cli("enrollment", "status", config=config)
@@ -327,7 +327,7 @@ class Harness:
         self.mark("missing and empty enrollment status leaves database files and schema untouched")
 
         self.stage = "read-only enrollment status for legacy schemas"
-        invalid_endpoint = "https:///SYNTHETIC-STATUS-INVALID-URL"
+        invalid_endpoint = "https:/SYNTHETIC-STATUS-INVALID-URL/redirect://example.invalid"
         legacy_url = (
             "https://SYNTHETIC-STATUS-USER:SYNTHETIC-STATUS-USERINFO@PUSH.example.invalid:443"
             "/SYNTHETIC-STATUS-PATH?key=SYNTHETIC-STATUS-QUERY#SYNTHETIC-STATUS-FRAGMENT"
@@ -354,6 +354,16 @@ class Harness:
             self.cli("enrollment", "status", LEGACY_ACCOUNT, config=config, error="not_found")
             require(self.rows("PRAGMA user_version", database=database) == [(version,)],
                     "status migrated an upstream schema")
+        legacy_report = {"enrollments": [invalid, legacy]}
+        literal = private_file(self.directory / "file:status.db", database.read_bytes())
+        alternate = private_file(self.directory / "status.db", b"")
+        require(report(self.make_config(db=literal.name)) == legacy_report,
+                "status interpreted a literal file: database name as a URI")
+        require(alternate.read_bytes() == b"", "status modified the alternate URI database")
+        ancestor = self.directory / "status-ancestor"
+        ancestor.symlink_to(self.directory, target_is_directory=True)
+        require(report(self.make_config(db=str(ancestor / "state" / database.name))) == legacy_report,
+                "status rejected a database under a symlinked ancestor")
         self.mark("status reads upstream schemas 0 and 1, redacts valid origins and handles invalid endpoints")
 
         self.stage = "read-only enrollment status for encrypted protocol versions"

@@ -1567,6 +1567,12 @@ fn prune(tx: &Transaction<'_>, now: i64) -> Result<()> {
     Ok(())
 }
 
+fn state_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 #[cfg(unix)]
 fn protected_state_file(path: &Path, create: bool) -> Result<Option<fs::File>> {
     use std::io::ErrorKind;
@@ -1582,10 +1588,7 @@ fn protected_state_file(path: &Path, create: bool) -> Result<Option<fs::File>> {
             Err(e) => return Err(bad(e)),
         }
     }
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let parent = state_parent(path);
     if create && !parent.exists() {
         fs::DirBuilder::new()
             .recursive(true)
