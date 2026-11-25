@@ -153,19 +153,19 @@ pub async fn import(bytes: &[u8]) -> Result<Value, Error> {
     Ok(receipt_response(&enrollment, receipt, current_v3_replay))
 }
 
-pub fn status(account: &str) -> Result<Value, Error> {
-    let store = PushStore::open(config::get_db()).map_err(|e| Error(e.code()))?;
-    let sub = store
-        .get_subscription(account)
-        .map_err(|e| Error(e.code()))?
-        .ok_or(Error("not_found"))?;
-    let state = store
-        .account_state(account)
-        .map_err(|e| Error(e.code()))?
-        .ok_or(Error("not_found"))?;
-    Ok(
-        json!({"instance":sub.instance,"subscription_epoch":sub.subscription_epoch,"state":state,"event_version":sub.event_version()}),
-    )
+pub fn status(account: Option<&str>) -> Result<Value, Error> {
+    let registrations = push_store::status::read(Path::new(config::get_db()), account)
+        .map_err(|e| Error(e.code()))?;
+    if account.is_none() {
+        return Ok(json!({"enrollments": registrations}));
+    }
+    let registration = registrations.into_iter().next().ok_or(Error("not_found"))?;
+    Ok(json!({
+        "instance": registration.instance,
+        "subscription_epoch": registration.subscription_epoch,
+        "state": registration.state,
+        "event_version": registration.selected_event_version,
+    }))
 }
 
 #[cfg(test)]

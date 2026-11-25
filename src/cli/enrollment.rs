@@ -9,8 +9,8 @@ pub enum EnrollmentCommand {
         #[arg(long, required_unless_present = "file")]
         stdin: bool,
     },
-    /// Show local registration state without endpoint or keys.
-    Status { account_id: String },
+    /// List local registrations, or show encrypted status for one account.
+    Status { account_id: Option<String> },
 }
 pub async fn run(
     command: &EnrollmentCommand,
@@ -26,6 +26,8 @@ pub async fn run(
             };
             crate::enrollment::import(&bytes).await
         }
-        EnrollmentCommand::Status { account_id } => crate::enrollment::status(account_id),
+        EnrollmentCommand::Status { account_id } => {
+            crate::enrollment::status(account_id.as_deref())
+        }
     }
 }
