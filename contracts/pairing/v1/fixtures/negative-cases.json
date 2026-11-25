@@ -1,0 +1,30 @@
+{
+  "schema": [
+    {"name":"missing VAPID key","kind":"offer","remove":["vapid_public_key"]},
+    {"name":"label contains newline","kind":"offer","replace":{"host_label":"Collie\n"}},
+    {"name":"origin is null instead of absent","kind":"offer","replace":{"provider_origin":null}},
+    {"name":"object representation of intent","kind":"request","replace":{"intent":{"pair_bridge":null}}},
+    {"name":"unknown intent","kind":"request","replace":{"intent":"rotate_bridge"}},
+    {"name":"unsupported version","kind":"request","replace":{"pairing_version":2}},
+    {"name":"plaintext field","kind":"request","replace":{"enrollment":{}}},
+    {"name":"padded nonce","kind":"request","replace":{"nonce":"AAECAwQFBgcICQo="}},
+    {"name":"bad base64 trailing bits","kind":"request","replace":{"ciphertext":"AAAAAAAAAAAAAAAAAAAAAAB"}},
+    {"name":"short ciphertext","kind":"request","replace":{"ciphertext":"AA"}},
+    {"name":"unsigned receipt member","kind":"response","replace":{"receipt":{}}}
+  ],
+  "crypto": [
+    {"name":"changed display host","offer":{"host_label":"Other Lab"}},
+    {"name":"changed provider","offer":{"provider_origin":"https://different.example.test"}},
+    {"name":"changed expiry","offer":{"expires_at":1800000001}},
+    {"name":"changed VAPID","offer":{"vapid_public_key":"BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},
+    {"name":"changed server public key","offer":{"server_public_key":"CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},
+    {"name":"changed intent","offer":{"intent":"add_receiver"},"request":{"intent":"add_receiver"}},
+    {"name":"changed version","offer":{"pairing_version":2},"request":{"pairing_version":2}},
+    {"name":"changed session ID","offer":{"session_id":"8b0c14da-3d69-478a-8591-29d7dba2c9b4"},"request":{"session_id":"8b0c14da-3d69-478a-8591-29d7dba2c9b4"}},
+    {"name":"changed client public key","request":{"client_public_key":"CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},
+    {"name":"low order client key","request":{"client_public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}},
+    {"name":"noncanonical client public key","request":{"client_public_key":"7f_______________________________________38"}},
+    {"name":"changed nonce","request":{"nonce":"AQECAwQFBgcICQoL"}},
+    {"name":"changed tag","flip_tag":true}
+  ]
+}

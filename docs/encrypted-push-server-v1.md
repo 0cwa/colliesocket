@@ -32,7 +32,7 @@ Use the selected source commit and the Rust toolchain pinned in
 ```sh
 cargo build --locked
 cargo test --locked
-python3 -m pip install -r contracts/encrypted-push/v1/tools/requirements.txt
+python3 -m pip install -r contracts/pairing/v1/tools/requirements.txt
 python3 contracts/encrypted-push/v1/tools/conformance.py
 sh crates/colliesocket-push/tools/conformance.sh
 python3 tests/server_cli.py
@@ -235,7 +235,7 @@ through its normal authenticated Signal fetch.
 
 ## Migration and rollback
 
-The current store uses **schema 5**, defined by
+The current store uses **schema 6**, defined by
 [`SCHEMA_VERSION` in `src/push_store.rs`](../src/push_store.rs). Migration preserves
 existing connections and v1/v2 enrollments; it does not negotiate v3 or enable
 Signal control for an unkeyed enrollment. Legacy wake sending remains disabled
@@ -244,15 +244,15 @@ unless explicitly enabled for a bounded period.
 Server startup and CLI commands can apply migrations when opening state.
 Complete the backup before the new binary first opens an existing database:
 
-1. Stop the server and any concurrent CLI drain/import processes. Confirm they
-   have exited before handling state files.
+1. Stop the server and any concurrent CLI drain, import, or pairing processes.
+   Confirm they have exited before handling state files.
 2. Retain the exact old executable/image reference, config, ownership, and a
    complete private database backup. Use SQLite's backup API or a cleanly
    stopped database. Do not copy only the main file from an active WAL database.
 3. Verify service ownership, parent mode 0700, and DB/sidecar mode 0600. Existing
    unsafe paths fail closed; migration is not a permission-repair command.
 4. Run the selected binary's `migrate` command under the service account.
-   Check the successful `{"schema_version":5}` response, then private readiness
+   Check the successful `{"schema_version":6}` response, then private readiness
    and the selected revision's synthetic smoke checks before considering real use.
 
 The implementation rejects future schema versions and rolls back interrupted
@@ -263,6 +263,18 @@ Never let the old binary open the upgraded live DB. Do not treat changing
 `user_version` or dropping tables as rollback. These requirements come from
 [`src/push_store.rs`](../src/push_store.rs) and the
 [frozen rollback rules](../contracts/encrypted-push/v1/runtime.md#state-secret-permissions-and-migrations).
+
+Clear QR pairing sessions before backing up a schema 6 database and after
+restoring one, while the server and local writers are stopped. As the service
+account, run the following with the absolute database path:
+
+```sh
+sqlite3 /absolute/path/to/state.db 'PRAGMA secure_delete=ON; DELETE FROM pairing_sessions;'
+```
+
+This closes all offers and removes their stored private keys and terminal
+records. Operators must generate new offers after backup or restore. See the
+[pairing contract](../contracts/pairing/v1/README.md#receipt-and-session-lifecycle).
 
 A restore can revive old epochs, request receipts, queued events, or replay
 clocks. Keep affected sends disabled. Before resuming encrypted sends, privately

@@ -10,6 +10,7 @@ mod config;
 mod control;
 mod db;
 mod enrollment;
+mod pairing;
 mod push;
 mod push_store;
 mod qrcode;

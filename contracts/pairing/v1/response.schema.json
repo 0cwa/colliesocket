@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cwa/colliesocket/contracts/pairing/v1/response.schema.json",
+  "title": "CollieSocket pairing v1 response",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pairing_version",
+        "session_id",
+        "intent",
+        "nonce",
+        "ciphertext"
+      ],
+      "properties": {
+        "pairing_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+        },
+        "intent": {
+          "const": "pair_bridge"
+        },
+        "nonce": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 16,
+          "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+        },
+        "ciphertext": {
+          "type": "string",
+          "minLength": 23,
+          "maxLength": 1387,
+          "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pairing_version",
+        "session_id",
+        "expires_at",
+        "state"
+      ],
+      "properties": {
+        "pairing_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "state": {
+          "enum": [
+            "active",
+            "expired",
+            "consumed",
+            "cancelled"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "enum": [
+            "invalid_offer",
+            "invalid_request",
+            "invalid_envelope",
+            "unsupported_intent",
+            "invalid_session",
+            "session_expired",
+            "session_consumed",
+            "invalid_json",
+            "input_too_large",
+            "unsafe_file",
+            "invalid_enrollment",
+            "invalid_endpoint",
+            "unsupported_version",
+            "capability_required",
+            "encryption_required",
+            "invalid_key",
+            "idempotency_conflict",
+            "epoch_conflict",
+            "capacity_exceeded",
+            "queue_full",
+            "state_unavailable"
+          ]
+        }
+      }
+    }
+  ]
+}

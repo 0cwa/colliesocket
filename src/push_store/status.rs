@@ -1,6 +1,6 @@
 //! Read-only projection of local registration metadata for the CLI.
 use super::{
-    protected_state_file, row_epoch, state_parent, valid_instance, verify_connection_schema,
+    protected_state_file, row_epoch, sqlite_state_path, valid_instance, verify_connection_schema,
     AccountState, Result, StoreError, SCHEMA_VERSION,
 };
 use rusqlite::{Connection, OpenFlags, Row};
@@ -51,15 +51,8 @@ pub(crate) fn read(path: &Path, account: Option<&str>) -> Result<Vec<Registratio
     // Close the preflight descriptor before SQLite takes its POSIX locks.
     drop(file);
 
-    // A relative name starting with `file:` would be interpreted as a URI.
-    // Resolve symlinked ancestors while keeping NOFOLLOW on the database file.
-    let filename = path.file_name().ok_or(StoreError::UnsafeStatePath)?;
-    let sqlite_path = state_parent(path)
-        .canonicalize()
-        .map_err(|_| StoreError::UnsafeStatePath)?
-        .join(filename);
     let mut db = Connection::open_with_flags(
-        sqlite_path,
+        sqlite_state_path(path)?,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     let snapshot = db.transaction()?;

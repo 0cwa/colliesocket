@@ -27,7 +27,11 @@ pub fn gen_url_airgapped() -> Result<Url> {
 
 /// Return QRCode made with characters
 pub fn url_to_printable_qr(url: &Url) -> String {
-    let qr = QrCode::encode_text(&url.as_str(), QrCodeEcc::Low).unwrap();
+    text_to_printable_qr(url.as_str())
+}
+
+pub(crate) fn text_to_printable_qr(text: &str) -> String {
+    let qr = QrCode::encode_text(text, QrCodeEcc::Low).unwrap();
     let mut result = String::new();
     let border: i32 = 4;
     for y in (-border..qr.size() + border).step_by(2) {

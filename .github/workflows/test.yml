@@ -29,12 +29,14 @@ jobs:
       - name: Install pinned verifiers
         run: |
           rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
-          python3 -m pip install -r contracts/encrypted-push/v1/tools/requirements.txt -r crates/colliesocket-push/tools/requirements.txt
+          python3 -m pip install -r contracts/pairing/v1/tools/requirements.txt -r crates/colliesocket-push/tools/requirements.txt
       - name: Frozen contract conformance
         run: python3 contracts/encrypted-push/v1/tools/conformance.py
       - name: Enrollment v2 and independent control-frame conformance
         run: python3 contracts/encrypted-push/v2/tools/conformance.py
       - run: python3 contracts/encrypted-push/v3/tools/conformance.py
+      - name: QR pairing v1 conformance
+        run: python3 contracts/pairing/v1/tools/conformance.py
       - name: Clippy for the push crate, tests and fixture generator
         run: cargo +1.90.0 clippy --locked --manifest-path crates/colliesocket-push/Cargo.toml --all-targets --no-deps
       - name: Published vector and independent decryption
@@ -60,7 +62,7 @@ jobs:
       - name: Install pinned verifier and toolchain
         run: |
           rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
-          python3 -m pip install -r contracts/encrypted-push/v1/tools/requirements.txt -r crates/colliesocket-push/tools/requirements.txt
+          python3 -m pip install -r contracts/pairing/v1/tools/requirements.txt -r crates/colliesocket-push/tools/requirements.txt
       - name: Format, public image pins and locked unit tests
         run: |
           cargo +1.90.0 fmt --all -- --check

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cwa/colliesocket/contracts/pairing/v1/offer.schema.json",
+  "title": "CollieSocket pairing v1 offer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pairing_version",
+    "session_id",
+    "intent",
+    "expires_at",
+    "host_label",
+    "vapid_public_key",
+    "server_public_key"
+  ],
+  "properties": {
+    "pairing_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+    },
+    "intent": {
+      "enum": [
+        "pair_bridge",
+        "add_receiver"
+      ]
+    },
+    "expires_at": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "host_label": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9 ._:-]{0,62}[A-Za-z0-9])?(?![\\s\\S])"
+    },
+    "provider_origin": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^https?://[^/?#@\\s\\\\]+(?![\\s\\S])"
+    },
+    "vapid_public_key": {
+      "type": "string",
+      "minLength": 87,
+      "maxLength": 87,
+      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+    },
+    "server_public_key": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+    }
+  }
+}

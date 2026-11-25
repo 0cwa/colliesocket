@@ -10,6 +10,7 @@ Only public RFC test keys and unmistakably synthetic credentials are used.
 import argparse
 import base64
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import http.client
 import http.server
@@ -243,8 +244,8 @@ class Harness:
         with sqlite3.connect(database or self.db) as connection:
             return connection.execute(query, parameters).fetchall()
 
-    def snapshot(self):
-        with sqlite3.connect(self.db) as connection:
+    def snapshot(self, database=None):
+        with sqlite3.connect(database or self.db) as connection:
             tables = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             ).fetchall()
@@ -451,11 +452,11 @@ class Harness:
 
     def migrations(self):
         self.stage = "migration and protected state modes"
-        require(self.cli("migrate") == {"schema_version": 5}, "migration did not select schema5")
+        require(self.cli("migrate") == {"schema_version": 6}, "migration did not select schema6")
         require(stat.S_IMODE(self.db.parent.stat().st_mode) == 0o700, "state directory is not0700")
         require(stat.S_IMODE(self.db.stat().st_mode) == 0o600, "state database is not0600")
-        require(self.rows("PRAGMA user_version") == [(5,)], "SQLite schema marker differs from CLI")
-        require(self.cli("migrate") == {"schema_version": 5}, "migration is not idempotent")
+        require(self.rows("PRAGMA user_version") == [(6,)], "SQLite schema marker differs from CLI")
+        require(self.cli("migrate") == {"schema_version": 6}, "migration is not idempotent")
         before = self.snapshot()
         self.db.chmod(0o644)
         try:
@@ -487,9 +488,205 @@ class Harness:
                 self.cli("migrate", config=config, error="state_unavailable")
                 require(self.rows("PRAGMA user_version", database=database) == [(99,)], "future schema was downgraded")
             else:
-                require(self.cli("migrate", config=config) == {"schema_version": 5}, "upstream schema migration failed")
+                require(self.cli("migrate", config=config) == {"schema_version": 6}, "upstream schema migration failed")
             require(self.rows("SELECT * FROM connections", database=database) == [original], "migration changed legacy credentials or forbidden state")
         self.mark("upstream schemas0/1 preserve connection tuple and forbidden flag;future schema fails closed")
+
+        alternate = self.directory / "uri-state.db"
+        with sqlite3.connect(alternate) as connection:
+            connection.execute(LEGACY_SCHEMA)
+        alternate.chmod(0o644)
+        original = alternate.read_bytes()
+        literal = self.directory / "file:uri-state.db"
+        config = self.make_config(db=literal.name, legacy_wake_until=int(time.time()) + 120)
+        require(self.cli("migrate", config=config) == {"schema_version": 6}, "literal filename did not migrate")
+        self.cli("connection", "add", LEGACY_ACCOUNT, "2", PASSWORD, self.provider.origin + ENDPOINT_PATH,
+                 config=config)
+        self.provider.take()
+        require(self.rows("SELECT uuid FROM connections", database=literal) == [(LEGACY_ACCOUNT,)],
+                "the second writable SQLite connection ignored the literal filename")
+        require(alternate.read_bytes() == original, "writable SQLite opened an unchecked URI target")
+        self.mark("both writable SQLite opens use the protected literal filename and leave the URI target untouched")
+
+
+    def pairing(self):
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+        self.stage = "protected pairing"
+        contract = ROOT / "contracts/pairing/v1"
+        spec = importlib.util.spec_from_file_location("pairing_conformance", contract / "tools/conformance.py")
+        pairing = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pairing)
+        database = self.directory / "pairing-state" / "state.db"
+        vapid_private = "DSqYuWchrB6yIMYJtidvqANeRQic4uWy34afzZRsZnI"
+        vapid_public = "BOniQ9xHBPNY9gnQW4o-16vHqOb40pEIMifyUdFsxAgyzVkFMguxw0QrdbZcq8hRjN2zpeInRvKVPlkzABvuTnI"
+        settings = {"db": str(database), "vapid_privkey": vapid_private}
+        config = self.make_config(**settings)
+        enrollment = json.loads((ROOT / "contracts/encrypted-push/v3/fixtures/enrollment-keyed-v3.json").read_text())
+        enrollment.update(account_id=OTHER_ACCOUNT, password="SYNTHETIC-PAIRING-PASSWORD-CANARY")
+        enrollment["subscription"]["endpoint"] = self.provider.origin + ENDPOINT_PATH
+
+        def command(*args, active_config=config, **options):
+            return self.cli("pairing", *args, config=active_config, **options)
+
+        def offer(*args, **options):
+            return command("create", "--host-label", "Collie lab", *args, **options)
+
+        def seal(advertised, value):
+            client = X25519PrivateKey.generate()
+            request = pairing.seal_request(advertised, client, os.urandom(12), compact(value))
+            return request, client
+
+        def submit(request, **options):
+            return command("submit", "--stdin", data=compact(request), **options)
+
+        offered = offer("--qr")
+        session = offered["session_id"]
+        require(offered["provider_origin"] == self.provider.origin and offered["vapid_public_key"] == vapid_public,
+                "QR offer does not display the configured origin and VAPID key")
+        require("█".encode() in self.outputs[-1], "CLI did not render the offer QR")
+        pairing.validate("offer", compact(offered), {"offer": pairing.schema(contract, "offer")})
+        row = self.rows("SELECT expires_at-created_at,private_key FROM pairing_sessions WHERE session_id=?",
+                        (session,), database)[0]
+        require(row[0] == 300 and len(row[1]) == 32, "pairing defaults or private key storage differ")
+        require(command("status", session)["state"] == "active", "new session is not active")
+        request, client = seal(offered, enrollment)
+        before = self.snapshot(database)
+        offer("--intent", "add_receiver", error="unsupported_intent")
+        submit({**request, "intent": "add_receiver"}, error="unsupported_intent")
+        submit({**request, "intent": "unknown"}, error="invalid_request")
+        submit({**request, "intent": {"pair_bridge": None}}, error="invalid_request")
+        submit([request[name] for name in ("pairing_version", "session_id", "intent", "client_public_key", "nonce", "ciphertext")],
+               error="invalid_request")
+        sub = enrollment["subscription"]
+        positional_sub = [sub[name] for name in ("endpoint", "p256dh", "auth", "instance",
+                          "subscription_epoch", "encryption_required", "supported_event_versions", "capabilities")]
+        positional = [enrollment[name] for name in ("enrollment_version", "request_id", "import_seq",
+                      "account_id", "device_id", "password", "control_key", "subscription")]
+        submit(seal(offered, positional)[0], error="invalid_enrollment")
+        submit(seal(offered, {**enrollment, "subscription": positional_sub})[0], error="invalid_enrollment")
+        duplicate = b'{"password":"synthetic-duplicate",' + compact(enrollment)[1:]
+        submit(pairing.seal_request(offered, client, os.urandom(12), duplicate), error="invalid_json")
+        submit({**request, "pairing_version": 2}, error="unsupported_version")
+        submit({**request, "session_id": identifier(270)}, error="invalid_session")
+        command("submit", "--stdin", data=b" " * 11265, error="input_too_large")
+        command("submit", "--stdin", data=b'{"pairing_version":1,' + compact(request)[1:],
+                error="invalid_request")
+        command("submit", "--file", str(self.directory / "no-pairing-file"), error="unsafe_file")
+        for field, value in {"host_label": "Different host", "expires_at": offered["expires_at"] + 1,
+                             "provider_origin": "https://different.example.test",
+                             "vapid_public_key": self.metadata["p256dh"]}.items():
+            tampered, _ = seal({**offered, field: value}, enrollment)
+            submit(tampered, error="invalid_envelope")
+        submit({**request, "ciphertext": pairing.flipped(request["ciphertext"], 17, 8208)},
+               error="invalid_envelope")
+        legacy = self.enrollment
+        submit(seal(offered, legacy)[0], error="unsupported_version")
+        no_encryption = copy.deepcopy(enrollment)
+        no_encryption["subscription"]["encryption_required"] = False
+        submit(seal(offered, no_encryption)[0], error="encryption_required")
+        disallowed = self.make_config(**settings, allowed_uuids=[ACCOUNT])
+        submit(request, active_config=disallowed, error="invalid_enrollment")
+        require(self.snapshot(database) == before, "rejected pairing changed persistent state")
+        self.mark("QR offer and TTL defaults; strict envelope and transcript checks; reserved intent and disallowed enrollment leave state untouched")
+
+        other_origin = f"http://127.0.0.1:{fresh_port()}"
+        multi = self.make_config(**settings, allowed_endpoints=[self.provider.origin, other_origin])
+        other_endpoint = copy.deepcopy(enrollment)
+        other_endpoint["subscription"]["endpoint"] = other_origin + ENDPOINT_PATH
+        submit(seal(offered, other_endpoint)[0], active_config=multi, error="invalid_endpoint")
+        query_policy = self.make_config(**settings, required_endpoint_queries=[self.provider.origin + "?required=token"])
+        submit(request, active_config=query_policy, error="invalid_endpoint")
+        wildcard = self.make_config(**settings, allowed_endpoints=["*"])
+        unspecified = offer(active_config=wildcard)
+        require("provider_origin" not in unspecified, "wildcard config advertised a specific provider")
+        private_destination = copy.deepcopy(enrollment)
+        private_destination["subscription"]["endpoint"] = "https://127.0.0.1:1/private"
+        submit(seal(unspecified, private_destination)[0], active_config=wildcard, error="invalid_endpoint")
+        command("cancel", unspecified["session_id"])
+        require(self.rows("SELECT count(*) FROM encrypted_subscriptions", database=database) == [(0,)],
+                "disallowed endpoint enrolled a registration")
+        self.mark("pairing enforces scanned provider origin, configured query policy, and wildcard address restrictions")
+
+        # Force a failure at the session update after enrollment has written its rows.
+        with sqlite3.connect(database) as connection:
+            connection.execute("""CREATE TRIGGER test_pairing_abort BEFORE UPDATE ON pairing_sessions
+                                  WHEN NEW.state='consumed' BEGIN SELECT RAISE(ABORT,'synthetic'); END""")
+        before = self.snapshot(database)
+        submit(request, error="state_unavailable")
+        require(self.snapshot(database) == before, "failed session update left partial enrollment")
+        with sqlite3.connect(database) as connection:
+            connection.execute("DROP TRIGGER test_pairing_abort")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            args = [str(self.binary), "--config", str(config), "pairing", "submit", "--stdin"]
+            results = list(executor.map(lambda _: subprocess.run(
+                args, input=compact(request), capture_output=True, timeout=20,
+                cwd=self.directory, env=self.env, check=False), range(2)))
+        self.outputs.extend(output for result in results for output in (result.stdout, result.stderr))
+        require(sorted(result.returncode for result in results) == [0, 1],
+                "concurrent sealed submission must yield one receipt")
+        accepted = next(result for result in results if result.returncode == 0)
+        failed = next(result for result in results if result.returncode == 1)
+        require(json_line(failed.stderr) == {"error": "session_consumed"}, "race loser returned wrong error")
+        # Receipt authentication is performed by the independent client.
+        receipt = pairing.open_receipt(offered, request, json_line(accepted.stdout), client)
+        pairing.schema(pairing.V3, "response").validate(receipt)
+        require(receipt["request_id"] == enrollment["request_id"] and receipt["status"] == "accepted"
+                and receipt["replayed"] is False, "receipt does not describe the installed v3 import")
+        require(command("status", session)["state"] == "consumed", "consumed state did not survive CLI exit")
+        submit(request, error="session_consumed")
+        submit(seal(offered, enrollment)[0], error="session_consumed")
+        require(self.rows("SELECT offer_json,private_key FROM pairing_sessions WHERE session_id=?",
+                          (session,), database) == [(None, None)], "consumed session retained key material")
+        require(self.rows("SELECT count(*) FROM encrypted_push_queue", database=database) == [(1,)],
+                "accepted pairing must queue one enrollment confirmation")
+        self.mark("session consumption and enrollment roll back together; two concurrent submissions yield one bound receipt and one replay error")
+
+        manual = private_file(self.directory / "pairing-manual-enrollment.json", compact(enrollment))
+        unchanged = self.cli("enrollment", "import", "--file", str(manual), config=config)
+        require(unchanged["status"] == "unchanged" and unchanged["replayed"] is True,
+                "manual import did not recognize the pairing enrollment")
+        repeat = offer()
+        repeat_request, repeat_client = seal(repeat, enrollment)
+        sealed_file = private_file(self.directory / "sealed-pairing-request.json", compact(repeat_request))
+        result = command("submit", "--file", str(sealed_file))
+        require(pairing.open_receipt(repeat, repeat_request, result, repeat_client) == unchanged,
+                "pairing and manual import receipts disagree for an exact v3 replay")
+        self.mark("mode-0600 sealed file and stdin both work; v3 manual file import retains matching receipt semantics")
+
+        offer("--ttl-seconds", "601", error="invalid_offer")
+        expired = offer("--ttl-seconds", "1")
+        exp_request, _ = seal(expired, enrollment)
+        with sqlite3.connect(database) as connection:
+            connection.execute("UPDATE pairing_sessions SET created_at=created_at-2,expires_at=expires_at-2 WHERE session_id=?",
+                               (expired["session_id"],))
+        submit(exp_request, error="session_expired")
+        require(command("status", expired["session_id"])["state"] == "expired", "expired state missing")
+        require(self.rows("SELECT private_key FROM pairing_sessions WHERE session_id=?", (expired["session_id"],),
+                          database) == [(None,)], "expired session retained private key")
+        cancelled = offer("--ttl-seconds", "600")
+        cancel_request, _ = seal(cancelled, enrollment)
+        require(command("cancel", cancelled["session_id"])["state"] == "cancelled", "cancel did not close session")
+        command("cancel", cancelled["session_id"], error="invalid_session")
+        submit(cancel_request, error="invalid_session")
+        with sqlite3.connect(database) as connection:
+            connection.execute("UPDATE pairing_sessions SET created_at=created_at-87000,expires_at=expires_at-87000 WHERE session_id=?",
+                               (session,))
+        submit(request, error="invalid_session")
+        require(self.rows("SELECT count(*) FROM pairing_sessions WHERE session_id=?", (session,), database) == [(0,)],
+                "terminal row survived its replay-retention window")
+        for _ in range(8):
+            offer()
+        offer(error="capacity_exceeded")
+        self.mark("TTL, expiry, cancellation and replay retention erase keys; active session cap is enforced")
+
+        joined = b"\n".join(self.outputs)
+        canaries = [vapid_private, enrollment["password"], enrollment["control_key"],
+                    enrollment["subscription"]["endpoint"], encoded(row[1]), row[1].hex(),
+                    encoded(client.private_bytes_raw())]
+        require(all(canary.encode() not in joined for canary in canaries), "pairing trace exposed a secret")
+        self.mark("QR, responses and trace logs exclude pairing key, VAPID key, enrollment and endpoint secrets")
 
     def protected_imports(self):
         self.stage = "protected import and malformed enrollment"
@@ -672,6 +869,11 @@ class Harness:
         while ready_port == public_port:
             ready_port = fresh_port()
         config = self.make_config(webserver=True, port=public_port, ready_port=ready_port)
+        expired_session = identifier(271)
+        now = int(time.time())
+        with sqlite3.connect(self.db) as connection:
+            connection.execute("INSERT INTO pairing_sessions VALUES (?,?,?,'active',?,?)",
+                               (expired_session, now - 600, now - 300, "{}", bytes(32)))
         stdout = (self.directory / "worker.stdout").open("w+b")
         stderr = (self.directory / "worker.stderr").open("w+b")
         self.worker_files = (stdout, stderr)
@@ -687,12 +889,14 @@ class Harness:
                 status, body = self.http(ready_port, "GET", "/readyz")
                 public_status, _ = self.http(public_port, "GET", "/discover")
                 ready = status == 200 and json.loads(body) == {"ready": True} and public_status == 200
-                if ready:
+                if ready and self.rows("SELECT state,private_key FROM pairing_sessions WHERE session_id=?",
+                                       (expired_session,)) == [("expired", None)]:
                     break
+                ready = False
             except (OSError, ValueError, http.client.HTTPException):
                 pass
             time.sleep(0.05)
-        require(ready, "private readiness and discovery did not become healthy")
+        require(ready, "server did not become ready, expose discovery, and reap the expired pairing")
         require(self.cli("ready", config=config) == {"ready": True}, "private CLI readiness probe failed")
         # Linux is the supported runtime. Verify the actual listening address,
         # not merely that a request to loopback happened to succeed.
@@ -708,6 +912,8 @@ class Harness:
         require(all(marker not in page.lower() for marker in [b"<svg", b"<img", b"mollysocket://", b"qrcode"]), "public discovery exposes QR enrollment")
         before = self.snapshot()
         require(self.http(public_port, "POST", "/", compact(self.enrollment))[0] == 404, "public HTTP accepted enrollment credentials")
+        require(self.http(public_port, "POST", "/pairing/v1/submit", b"{}")[0] == 404,
+                "public HTTP exposes a pairing submission path")
         require(self.snapshot() == before, "public HTTP modified enrollment state")
         self.mark("real push-only server;readiness bound127.0.0.1;CLI probe;public ready404/POST404;discovery has no QR credential path")
 
@@ -762,6 +968,7 @@ class Harness:
     def run(self):
         self.enrollment_status()
         self.migrations()
+        self.pairing()
         self.protected_imports()
         self.encrypted_events_and_rotation()
         self.stale_and_recovery()
