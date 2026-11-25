@@ -34,6 +34,9 @@ OTHER_ACCOUNT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 LEGACY_ACCOUNT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 PASSWORD = "SYNTHETIC-CLI-PASSWORD-REDACTION-CANARY"
 ENDPOINT_PATH = "/SYNTHETIC-ENDPOINT-CANARY?token=SYNTHETIC-QUERY-CANARY"
+LEGACY_SCHEMA = """CREATE TABLE connections(
+    uuid TEXT UNIQUE ON CONFLICT REPLACE, device_id INTEGER, password TEXT, endpoint TEXT,
+    forbidden BOOLEAN NOT NULL CHECK(forbidden IN(0,1)), last_registration INTEGER)"""
 NOT_RUN = [
     "real Signal connection or linked-device credentials",
     "Android connector, physical device, or lock-state acceptance",
@@ -293,6 +296,149 @@ class Harness:
         require(abs(event["issued_at"] - int(time.time())) <= 60, "event issuance clock exceeds profile tolerance")
         return body
 
+    def enrollment_status(self):
+        self.stage = "read-only enrollment status with missing and empty databases"
+        output_start = len(self.outputs)
+        empty = {"enrollments": []}
+        require(self.cli("enrollment", "status") == empty, "missing database should report no registrations")
+        self.cli("enrollment", "status", ACCOUNT, error="not_found")
+        require(not self.db.parent.exists(), "status created a state directory for a missing database")
+        self.db.parent.mkdir(mode=0o700)
+        require(self.cli("enrollment", "status") == empty, "missing file should report no registrations")
+        require(not list(self.db.parent.iterdir()), "status created a missing database")
+        database = private_file(self.db.parent / "status.db", b"")
+        config = self.make_config(db=str(database))
+
+        def snapshot_files():
+            return {
+                path.name: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)
+                for path in database.parent.iterdir()
+            }
+
+        def report():
+            before = snapshot_files()
+            sent = self.provider.count
+            result = self.cli("enrollment", "status", config=config)
+            require(snapshot_files() == before, "status modified the database or its sidecars")
+            require(self.provider.count == sent, "status contacted the provider")
+            return result
+
+        require(report() == empty, "empty SQLite database should report no registrations")
+        self.mark("missing and empty enrollment status leaves database files and schema untouched")
+
+        self.stage = "read-only enrollment status for legacy schemas"
+        invalid_endpoint = "https:///SYNTHETIC-STATUS-INVALID-URL"
+        legacy_url = (
+            "https://SYNTHETIC-STATUS-USER:SYNTHETIC-STATUS-USERINFO@PUSH.example.invalid:443"
+            "/SYNTHETIC-STATUS-PATH?key=SYNTHETIC-STATUS-QUERY#SYNTHETIC-STATUS-FRAGMENT"
+        )
+        legacy_password = "SYNTHETIC-STATUS-LEGACY-PASSWORD"
+        invalid_account = identifier(10)
+        for version in (0, 1):
+            with sqlite3.connect(database) as connection:
+                if version == 0:
+                    connection.execute(LEGACY_SCHEMA)
+                    connection.executemany("INSERT INTO connections VALUES(?,?,?,?,?,?)", [
+                        (LEGACY_ACCOUNT, 7, legacy_password, legacy_url, 0, 123),
+                        (invalid_account, 3, legacy_password, invalid_endpoint, 1, 123),
+                    ])
+                connection.execute(f"PRAGMA user_version={version}")
+            legacy = {
+                "account_id": LEGACY_ACCOUNT, "device_id": 7, "mode": "legacy_unkeyed",
+                "enrollment_version": None, "selected_event_version": None, "has_control_key": False,
+                "subscription_epoch": None, "instance": None,
+                "endpoint_origin": "https://push.example.invalid", "active": True,
+            }
+            invalid = dict(legacy, account_id=invalid_account, device_id=3, endpoint_origin=None, active=False)
+            require(report() == {"enrollments": [invalid, legacy]}, "legacy status metadata or origin differs")
+            self.cli("enrollment", "status", LEGACY_ACCOUNT, config=config, error="not_found")
+            require(self.rows("PRAGMA user_version", database=database) == [(version,)],
+                    "status migrated an upstream schema")
+        self.mark("status reads upstream schemas 0 and 1, redacts valid origins and handles invalid endpoints")
+
+        self.stage = "read-only enrollment status for encrypted protocol versions"
+        password = "SYNTHETIC-STATUS-SIGNAL-PASSWORD"
+        encrypted_path = "/SYNTHETIC-STATUS-ENCRYPTED-PATH?token=SYNTHETIC-STATUS-ENCRYPTED-QUERY"
+        auth = encoded(b"status-auth-test")
+        key = encoded(b"status-control-key-test-32-bytes")
+        sequence = 7123498601742651
+        expected = [invalid, legacy]
+        for index, (version, keyed), in enumerate([(1, False), (2, False), (2, True), (3, True)], start=20):
+            account = identifier(index)
+            value = copy.deepcopy(self.enrollment)
+            value.update(account_id=account, request_id=identifier(index + 10), device_id=4,
+                         password=password, enrollment_version=version)
+            event_version = version if keyed else 1
+            value["subscription"].update(
+                endpoint=self.provider.origin + encrypted_path, auth=auth,
+                supported_event_versions=list(range(1, event_version + 1)),
+            )
+            if keyed:
+                value["control_key"] = key
+            if version == 3:
+                value["import_seq"] = sequence
+            self.import_value(value, config=config)
+            if version == 3:
+                with sqlite3.connect(database) as connection:
+                    connection.execute(
+                        "UPDATE encrypted_subscriptions SET state='provider_rejected' WHERE account_id=?",
+                        (account,),
+                    )
+            expected.append({
+                "account_id": account, "device_id": 4, "mode": f"encrypted_v{event_version}",
+                "enrollment_version": version if keyed else None, "selected_event_version": event_version,
+                "has_control_key": keyed, "subscription_epoch": 1, "instance": "cli-fixture-instance",
+                "endpoint_origin": self.provider.origin, "active": version != 3,
+            })
+        require(report() == {"enrollments": sorted(expected, key=lambda row: row["account_id"])},
+                "mixed enrollment status fields differ")
+        before = snapshot_files()
+        require(self.cli("enrollment", "status", account, config=config) == {
+            "instance": "cli-fixture-instance", "subscription_epoch": 1,
+            "state": "provider_rejected", "event_version": 3,
+        }, "positional status response changed")
+        require(snapshot_files() == before, "positional status modified persistent state")
+        database.chmod(0o400)
+        database.parent.chmod(0o500)
+        try:
+            require(report() == {"enrollments": sorted(expected, key=lambda row: row["account_id"])},
+                    "status could not read a protected database without write permissions")
+        finally:
+            database.parent.chmod(0o700)
+            database.chmod(0o600)
+        self.mark("imported encrypted v1, unkeyed/keyed v2 and v3 status use stored metadata and preserve positional output")
+
+        self.stage = "read-only enrollment status errors under trace logging"
+        invalid_json = "SYNTHETIC-STATUS-MALFORMED-JSON"
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "UPDATE encrypted_subscriptions SET subscription_json=? WHERE account_id=?",
+                (invalid_json, account),
+            )
+        before = snapshot_files()
+        self.cli("enrollment", "status", config=config, error="state_unavailable")
+        self.cli("enrollment", "status", account, config=config, error="state_unavailable")
+        require(snapshot_files() == before, "status changed state after an invalid SQLite row")
+        with sqlite3.connect(database) as connection:
+            require(connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",),
+                    "could not create a WAL database fixture")
+        connection.close()
+        before = snapshot_files()
+        self.cli("enrollment", "status", config=config, error="state_unavailable")
+        require(snapshot_files() == before, "status modified SQLite WAL mode or sidecars")
+        outputs = self.outputs[output_start:]
+        markers = [
+            password, legacy_password, auth, self.metadata["p256dh"], key, str(sequence), invalid_json,
+            *[f"SYNTHETIC-STATUS-{suffix}" for suffix in (
+                "INVALID-URL", "USER", "USERINFO", "PATH", "QUERY", "FRAGMENT",
+                "ENCRYPTED-PATH", "ENCRYPTED-QUERY",
+            )],
+            '"password"', '"p256dh"', '"auth"', '"control_key"', '"import_seq"',
+        ]
+        require(all(marker.encode() not in output for marker in markers for output in outputs),
+                "status CLI stdout or stderr exposed a secret marker under trace logging")
+        self.mark("status leaves errors and WAL sidecars untouched and redacts stdout and stderr at trace level")
+
     def migrations(self):
         self.stage = "migration and protected state modes"
         require(self.cli("migrate") == {"schema_version": 5}, "migration did not select schema5")
@@ -323,7 +469,7 @@ class Harness:
             database = private_file(directory / "state.db", b"")
             original = (OTHER_ACCOUNT, 2, PASSWORD, "https://fixture.example.invalid/legacy", 1, 123)
             with sqlite3.connect(database) as connection:
-                connection.execute("CREATE TABLE connections(uuid TEXT UNIQUE ON CONFLICT REPLACE,device_id INTEGER,password TEXT,endpoint TEXT,forbidden BOOLEAN NOT NULL CHECK(forbidden IN(0,1)),last_registration INTEGER)")
+                connection.execute(LEGACY_SCHEMA)
                 connection.execute("INSERT INTO connections VALUES(?,?,?,?,?,?)", original)
                 connection.execute(f"PRAGMA user_version={version}")
             config = self.make_config(db=str(database))
@@ -604,6 +750,7 @@ class Harness:
         self.mark("explicit idempotent local removal clears state and reports signal_unlinkedfalse")
 
     def run(self):
+        self.enrollment_status()
         self.migrations()
         self.protected_imports()
         self.encrypted_events_and_rotation()

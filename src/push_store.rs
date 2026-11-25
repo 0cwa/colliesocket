@@ -17,6 +17,8 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashSet, fmt, fs, future::Future, path::Path, time::Duration};
 
+pub(crate) mod status;
+
 pub const SCHEMA_VERSION: u32 = 5;
 pub const MAX_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_IMPORT_SEQUENCE: u64 = i64::MAX as u64;
@@ -619,7 +621,7 @@ fn token() -> Result<String> {
 impl PushStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        protect_path(path)?;
+        protected_state_file(path, true)?;
         let mut db = Connection::open(path)?;
         // Legacy dispatch uses a configured 10-second Tokio timeout while it
         // holds SQLite's database-wide writer reservation. Contending writers
@@ -1133,6 +1135,7 @@ impl PushStore {
         Ok(Some(outcome))
     }
 
+    #[cfg(test)]
     pub fn account_state(&self, account_id: &str) -> Result<Option<AccountState>> {
         let state: Option<String> = self
             .db
@@ -1565,17 +1568,25 @@ fn prune(tx: &Transaction<'_>, now: i64) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn protect_path(path: &Path) -> Result<()> {
+fn protected_state_file(path: &Path, create: bool) -> Result<Option<fs::File>> {
+    use std::io::ErrorKind;
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
     let bad = |_| StoreError::UnsafeStatePath;
     if path.file_name().is_none() || path.to_str() == Some(":memory:") {
         return Err(StoreError::UnsafeStatePath);
     }
+    if !create {
+        match fs::symlink_metadata(path) {
+            Ok(_) => (),
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(bad(e)),
+        }
+    }
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    if !parent.exists() {
+    if create && !parent.exists() {
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -1583,43 +1594,44 @@ fn protect_path(path: &Path) -> Result<()> {
             .map_err(bad)?;
     }
     let uid = unsafe { libc::geteuid() };
+    let owner_write_optional = if create { 0 } else { 0o200 };
+    let mode = |meta: &fs::Metadata| (meta.mode() & 0o7777) | owner_write_optional;
     let parent_meta = fs::symlink_metadata(parent).map_err(bad)?;
-    if !parent_meta.is_dir() || parent_meta.uid() != uid || parent_meta.mode() & 0o7777 != 0o700 {
+    if !parent_meta.is_dir() || parent_meta.uid() != uid || mode(&parent_meta) != 0o700 {
         return Err(StoreError::UnsafeStatePath);
     }
-    let file = fs::OpenOptions::new()
+    let file = match fs::OpenOptions::new()
         .read(true)
-        .write(true)
-        .create(true)
+        .write(create)
+        .create(create)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)
-        .map_err(bad)?;
+    {
+        Ok(file) => file,
+        Err(e) if !create && e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(bad(e)),
+    };
     let meta = file.metadata().map_err(bad)?;
-    if !meta.is_file() || meta.uid() != uid || meta.nlink() != 1 || meta.mode() & 0o7777 != 0o600 {
+    if !meta.is_file() || meta.uid() != uid || meta.nlink() != 1 || mode(&meta) != 0o600 {
         return Err(StoreError::UnsafeStatePath);
     }
     for suffix in ["-journal", "-wal", "-shm"] {
         let mut sidecar = path.as_os_str().to_os_string();
         sidecar.push(suffix);
         match fs::symlink_metadata(Path::new(&sidecar)) {
-            Ok(m)
-                if !m.is_file()
-                    || m.uid() != uid
-                    || m.nlink() != 1
-                    || m.mode() & 0o7777 != 0o600 =>
-            {
+            Ok(m) if !m.is_file() || m.uid() != uid || m.nlink() != 1 || mode(&m) != 0o600 => {
                 return Err(StoreError::UnsafeStatePath)
             }
             Ok(_) => (),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) if e.kind() == ErrorKind::NotFound => (),
             Err(_) => return Err(StoreError::UnsafeStatePath),
         }
     }
-    Ok(())
+    Ok(Some(file))
 }
 #[cfg(not(unix))]
-fn protect_path(_: &Path) -> Result<()> {
+fn protected_state_file(_: &Path, _: bool) -> Result<Option<fs::File>> {
     Err(StoreError::UnsafeStatePath)
 }
 
