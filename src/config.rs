@@ -145,6 +145,16 @@ pub(crate) fn get_test_signal_root() -> Option<native_tls::Certificate> {
         .and_then(|config| config.test_signal_root.clone())
 }
 
+pub(crate) fn single_provider_origin() -> Option<String> {
+    let cfg = get_cfg();
+    let mut endpoints = cfg.allowed_endpoints.iter();
+    let url = url::Url::parse(endpoints.next()?).ok()?;
+    if endpoints.next().is_some() || !cfg.is_endpoint_allowed_by_user(&url) {
+        return None;
+    }
+    Some(url.origin().ascii_serialization())
+}
+
 pub async fn is_endpoint_valid(url: &str) -> bool {
     get_cfg().is_endpoint_valid(url).await
 }

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cwa/colliesocket/contracts/pairing/v1/request.schema.json",
+  "title": "CollieSocket pairing v1 request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pairing_version",
+    "session_id",
+    "intent",
+    "client_public_key",
+    "nonce",
+    "ciphertext"
+  ],
+  "properties": {
+    "pairing_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+    },
+    "intent": {
+      "enum": [
+        "pair_bridge",
+        "add_receiver"
+      ]
+    },
+    "client_public_key": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+    },
+    "ciphertext": {
+      "type": "string",
+      "minLength": 23,
+      "maxLength": 10944,
+      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+    }
+  }
+}

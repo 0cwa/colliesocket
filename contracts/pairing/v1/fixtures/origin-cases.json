@@ -1,0 +1,18 @@
+[
+  {"name": "ASCII host", "origin": "https://push.example.test", "valid": true},
+  {"name": "compressed IPv6", "origin": "https://[2001:db8::1]:8443", "valid": true},
+  {"name": "IPv4 origin", "origin": "http://127.0.0.1:8020", "valid": true},
+  {"name": "mapped IPv6 in hex", "origin": "https://[::ffff:c000:201]", "valid": true},
+  {"name": "canonical IDNA label", "origin": "https://xn--fa-hia.example", "valid": true},
+  {"name": "valid bidirectional domain", "origin": "https://site.xn--4db.example", "valid": true},
+  {"name": "query and path", "origin": "https://push.example.test/path?token=synthetic", "valid": false},
+  {"name": "explicit default port", "origin": "https://push.example.test:443", "valid": false},
+  {"name": "expanded IPv6", "origin": "https://[2001:0db8:0:0:0:0:0:1]", "valid": false},
+  {"name": "zero-padded port", "origin": "https://push.example.test:08443", "valid": false},
+  {"name": "empty port", "origin": "https://push.example.test:", "valid": false},
+  {"name": "non-ASCII hostname", "origin": "https://p\u00fcsh.example.test", "valid": false},
+  {"name": "mapped IPv6 dotted tail", "origin": "https://[::ffff:192.0.2.1]", "valid": false},
+  {"name": "ASCII DEL in hostname", "origin": "https://push\u007f.example.test", "valid": false},
+  {"name": "ASCII digit label in bidirectional domain", "origin": "https://1.xn--4db.example", "valid": false},
+  {"name": "invalid IDNA label", "origin": "https://xn--a.example", "valid": false}
+]

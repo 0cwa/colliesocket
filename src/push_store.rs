@@ -13,13 +13,16 @@ use openssl::{
     pkey::PKey,
     sign::Signer,
 };
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashSet, fmt, fs, future::Future, path::Path, time::Duration};
 
+pub(crate) mod pairing;
 pub(crate) mod status;
 
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 pub const MAX_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub const MAX_IMPORT_SEQUENCE: u64 = i64::MAX as u64;
 pub const MAX_EVENT_BYTES: usize = 3072;
@@ -56,6 +59,9 @@ pub enum StoreError {
     UnsafeStatePath,
     FutureSchema,
     StateUnavailable,
+    InvalidSession,
+    SessionExpired,
+    SessionConsumed,
 }
 
 impl StoreError {
@@ -77,6 +83,9 @@ impl StoreError {
             Self::UnsafeStatePath => "unsafe_file",
             Self::FutureSchema => "state_unavailable",
             Self::StateUnavailable => "state_unavailable",
+            Self::InvalidSession => "invalid_session",
+            Self::SessionExpired => "session_expired",
+            Self::SessionConsumed => "session_consumed",
         }
     }
 }
@@ -218,7 +227,7 @@ pub enum ControlDisposition {
     Unchanged,
 }
 
-fn canonical_uuid(value: &str, v4: bool) -> bool {
+pub(crate) fn canonical_uuid(value: &str, v4: bool) -> bool {
     let b = value.as_bytes();
     b.len() == 36
         && b.iter().enumerate().all(|(i, c)| {
@@ -620,9 +629,7 @@ fn token() -> Result<String> {
 
 impl PushStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        protected_state_file(path, true)?;
-        let mut db = Connection::open(path)?;
+        let mut db = open_state_connection(path.as_ref())?;
         // Legacy dispatch uses a configured 10-second Tokio timeout while it
         // holds SQLite's database-wide writer reservation. Contending writers
         // have a separate 15-second SQLite busy wait.
@@ -669,8 +676,18 @@ impl PushStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if receipt(&tx, enrollment, &hash)?.is_none() {
-            tx.commit()?;
+        let current = Self::retry_current_import_status_in(&tx, enrollment, now, &hash)?;
+        tx.commit()?;
+        Ok(current)
+    }
+
+    fn retry_current_import_status_in(
+        tx: &Transaction<'_>,
+        enrollment: &Enrollment,
+        now: i64,
+        hash: &str,
+    ) -> Result<bool> {
+        if receipt(tx, enrollment, hash)?.is_none() {
             return Ok(false);
         }
         let row: Option<(
@@ -703,11 +720,10 @@ impl PushStore {
                 current_replay = true;
                 if state == "active" {
                     let event = make_enrollment_imported_event(enrollment, now)?;
-                    ensure_enrollment_confirmation(&tx, &enrollment.account_id, &event, now)?;
+                    ensure_enrollment_confirmation(tx, &enrollment.account_id, &event, now)?;
                 }
             }
         }
-        tx.commit()?;
         Ok(current_replay)
     }
 
@@ -720,7 +736,18 @@ impl PushStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(original) = receipt(&tx, enrollment, &hash)? {
+        let result = Self::enroll_in(&tx, enrollment, now, &hash)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    fn enroll_in(
+        tx: &Transaction<'_>,
+        enrollment: &Enrollment,
+        now: i64,
+        hash: &str,
+    ) -> Result<EnrollmentResult> {
+        if let Some(original) = receipt(tx, enrollment, hash)? {
             return Ok(original);
         }
         let count: usize = tx.query_row(
@@ -909,12 +936,11 @@ impl PushStore {
             )?;
             if enrollment.enrollment_version == 3 {
                 let event = make_enrollment_imported_event(enrollment, now)?;
-                ensure_enrollment_confirmation(&tx, &enrollment.account_id, &event, now)?;
+                ensure_enrollment_confirmation(tx, &enrollment.account_id, &event, now)?;
             }
         }
         tx.execute("INSERT INTO encrypted_enrollment_requests(account_id,request_id,request_digest,subscription_epoch,disposition,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
             params![enrollment.account_id,enrollment.request_id,hash,enrollment.subscription.subscription_epoch as i64,disposition.as_str(),now])?;
-        tx.commit()?;
         Ok(EnrollmentResult {
             replayed: false,
             disposition,
@@ -1573,6 +1599,24 @@ fn state_parent(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
+fn sqlite_state_path(path: &Path) -> Result<std::path::PathBuf> {
+    // Make the filename literal for SQLite, which recognizes relative paths
+    // starting with "file:" as URIs. Resolve ancestors for SQLite's NOFOLLOW.
+    let filename = path.file_name().ok_or(StoreError::UnsafeStatePath)?;
+    Ok(state_parent(path)
+        .canonicalize()
+        .map_err(|_| StoreError::UnsafeStatePath)?
+        .join(filename))
+}
+
+pub(crate) fn open_state_connection(path: &Path) -> Result<Connection> {
+    protected_state_file(path, true)?;
+    Ok(Connection::open_with_flags(
+        sqlite_state_path(path)?,
+        OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?)
+}
+
 #[cfg(unix)]
 fn protected_state_file(path: &Path, create: bool) -> Result<Option<fs::File>> {
     use std::io::ErrorKind;
@@ -1699,6 +1743,7 @@ fn verify_schema(db: &Connection) -> Result<()> {
     db.prepare("SELECT control_key,last_control_digest,control_status_at,import_id,import_seq FROM encrypted_subscriptions LIMIT 0")?;
     db.prepare("SELECT event_id,event_digest,expires_at,status_retry_key,created_at FROM encrypted_push_event_ids LIMIT 0")?;
     db.prepare("SELECT account_id,generation FROM encrypted_subscription_generations LIMIT 0")?;
+    db.prepare("SELECT session_id,created_at,expires_at,state,offer_json,private_key FROM pairing_sessions LIMIT 0")?;
     Ok(())
 }
 
@@ -1791,6 +1836,9 @@ PRAGMA user_version=2;
              ALTER TABLE encrypted_push_event_ids ADD COLUMN status_retry_key TEXT;
              ALTER TABLE encrypted_push_event_ids ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;",
         )?;
+    }
+    if version < 6 {
+        tx.execute_batch(pairing::SCHEMA)?;
     }
     // Invalid historical schemas must roll back the whole migration, including
     // the generation table and schema marker, instead of partially advancing.
@@ -2111,7 +2159,8 @@ mod tests {
         store
             .db
             .execute_batch(
-                "DROP TABLE encrypted_subscription_generations;
+                "DROP TABLE pairing_sessions;
+                 DROP TABLE encrypted_subscription_generations;
              ALTER TABLE encrypted_subscriptions DROP COLUMN control_key;
              ALTER TABLE encrypted_subscriptions DROP COLUMN last_control_digest;
              ALTER TABLE encrypted_subscriptions DROP COLUMN control_status_at;
@@ -2160,7 +2209,8 @@ mod tests {
         store
             .db
             .execute_batch(
-                "ALTER TABLE encrypted_subscriptions DROP COLUMN import_id;
+                "DROP TABLE pairing_sessions;
+                 ALTER TABLE encrypted_subscriptions DROP COLUMN import_id;
                  ALTER TABLE encrypted_subscriptions DROP COLUMN import_seq;
                  ALTER TABLE encrypted_push_event_ids DROP COLUMN status_retry_key;
                  ALTER TABLE encrypted_push_event_ids DROP COLUMN created_at;
@@ -2199,6 +2249,109 @@ mod tests {
             )
             .unwrap();
         assert_eq!(null_intent, (None, None));
+    }
+
+    #[test]
+    fn migration_from_five_preserves_v3_enrollment_and_confirmation() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let enrollment: Enrollment = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v3/fixtures/enrollment-keyed-v3.json"
+        ))
+        .unwrap();
+        store.enroll(&enrollment, NOW).unwrap();
+        store
+            .db
+            .execute_batch("DROP TABLE pairing_sessions; PRAGMA user_version=5;")
+            .unwrap();
+        drop(store);
+
+        let mut store = dir.store();
+        assert!(store.receipt_for(&enrollment).unwrap().unwrap().replayed);
+        assert_eq!(store.pending_count(None).unwrap(), 1);
+        let claimed = store.claim_due(NOW).unwrap().unwrap();
+        assert_eq!(claimed.event.version, 3);
+        assert_eq!(
+            claimed.event.import_id.as_deref(),
+            Some(enrollment.request_id.as_str())
+        );
+        let pairing_rows: u32 = store
+            .db
+            .query_row("SELECT count(*) FROM pairing_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pairing_rows, 0);
+    }
+
+    #[test]
+    fn final_pairing_check_persists_observed_expiry_before_enrolling() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let enrollment: Enrollment = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v3/fixtures/enrollment-keyed-v3.json"
+        ))
+        .unwrap();
+        let now = crate::push::now();
+        let session_id = id(123);
+        store
+            .create_pairing(&session_id, now - 2, now + 300, "{}", &[1u8; 32])
+            .unwrap();
+        assert!(store.load_pairing(&session_id).is_ok());
+
+        // The session was active when the request was opened, but the
+        // deadline has passed by the time policy checks release the caller.
+        store
+            .db
+            .execute("UPDATE pairing_sessions SET expires_at=?1", [now - 1])
+            .unwrap();
+        let result: Result<()> = store.enroll_pairing(&session_id, &enrollment, |_, _| {
+            panic!("expired session must not prepare a receipt")
+        });
+        assert_eq!(result, Err(StoreError::SessionExpired));
+        let row: (String, Option<Vec<u8>>) = store
+            .db
+            .query_row(
+                "SELECT state,private_key FROM pairing_sessions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("expired".into(), None));
+        assert!(store.receipt_for(&enrollment).unwrap().is_none());
+        assert_eq!(store.pending_count(None).unwrap(), 0);
+
+        // Simulate the deadline moving into the future after the check.
+        store
+            .db
+            .execute("UPDATE pairing_sessions SET expires_at=?1", [now + 300])
+            .unwrap();
+        assert!(matches!(
+            store.load_pairing(&session_id),
+            Err(StoreError::SessionExpired)
+        ));
+    }
+
+    #[test]
+    fn consumed_pairing_cannot_prepare_another_receipt() {
+        let dir = TestDir::new();
+        let mut store = dir.store();
+        let enrollment = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v3/fixtures/enrollment-keyed-v3.json"
+        ))
+        .unwrap();
+        let now = crate::push::now();
+        let session_id = id(124);
+        store
+            .create_pairing(&session_id, now, now + 300, "{}", &[2u8; 32])
+            .unwrap();
+        let receipt = store
+            .enroll_pairing(&session_id, &enrollment, |receipt, _| Ok(receipt))
+            .unwrap();
+        assert!(!receipt.replayed);
+        let replay: Result<()> = store.enroll_pairing(&session_id, &enrollment, |_, _| {
+            panic!("consumed session must not prepare another receipt")
+        });
+        assert_eq!(replay, Err(StoreError::SessionConsumed));
+        assert_eq!(store.pending_count(None).unwrap(), 1);
     }
 
     #[test]
@@ -4390,7 +4543,8 @@ mod tests {
         store
             .db
             .execute_batch(
-                "DROP TABLE encrypted_subscription_generations;
+                "DROP TABLE pairing_sessions;
+                 DROP TABLE encrypted_subscription_generations;
                  ALTER TABLE encrypted_subscriptions DROP COLUMN import_id;
                  ALTER TABLE encrypted_subscriptions DROP COLUMN import_seq;
                  ALTER TABLE encrypted_push_event_ids DROP COLUMN status_retry_key;
@@ -4425,7 +4579,8 @@ mod tests {
         let dir = TestDir::new();
         let mut store = dir.store();
         store.enroll(&keyed_enrollment(), NOW).unwrap();
-        store.db.execute_batch("DROP TABLE encrypted_subscription_generations; ALTER TABLE encrypted_subscriptions DROP COLUMN import_id; ALTER TABLE encrypted_subscriptions DROP COLUMN import_seq; ALTER TABLE encrypted_push_event_ids DROP COLUMN status_retry_key; ALTER TABLE encrypted_push_event_ids DROP COLUMN created_at; DROP TRIGGER encrypted_connection_update_guard; PRAGMA user_version=3;").unwrap();
+        store.db.execute_batch("DROP TABLE pairing_sessions;
+                 DROP TABLE encrypted_subscription_generations; ALTER TABLE encrypted_subscriptions DROP COLUMN import_id; ALTER TABLE encrypted_subscriptions DROP COLUMN import_seq; ALTER TABLE encrypted_push_event_ids DROP COLUMN status_retry_key; ALTER TABLE encrypted_push_event_ids DROP COLUMN created_at; DROP TRIGGER encrypted_connection_update_guard; PRAGMA user_version=3;").unwrap();
         drop(store);
         assert!(matches!(
             PushStore::open(dir.path()),

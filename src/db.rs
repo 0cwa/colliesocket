@@ -94,7 +94,7 @@ impl MollySocketDb {
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<MollySocketDb> {
         let path = path.as_ref();
         drop(crate::push_store::PushStore::open(path)?);
-        let db = rusqlite::Connection::open(path)?;
+        let db = crate::push_store::open_state_connection(path)?;
         db.busy_timeout(Duration::from_secs(5))?;
         db.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA synchronous=FULL;",

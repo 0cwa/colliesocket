@@ -14,7 +14,7 @@ pub const MAX_IMPORT_BYTES: u64 = 8192;
 #[derive(Debug, Clone, Copy)]
 pub struct Error(pub &'static str);
 
-fn receipt_response(
+pub(crate) fn receipt_response(
     enrollment: &Enrollment,
     receipt: push_store::EnrollmentResult,
     current_v3_replay: bool,
@@ -97,10 +97,14 @@ pub fn read_protected_file(_: &Path, _: u64) -> Result<Vec<u8>, Error> {
 }
 
 pub fn read_stdin() -> Result<Vec<u8>, Error> {
+    read_bounded_stdin(MAX_IMPORT_BYTES)
+}
+
+pub(crate) fn read_bounded_stdin(limit: u64) -> Result<Vec<u8>, Error> {
     if io::stdin().is_terminal() {
         return Err(Error("unsafe_file"));
     }
-    bounded_read(io::stdin().lock(), MAX_IMPORT_BYTES)
+    bounded_read(io::stdin().lock(), limit)
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Enrollment, Error> {
@@ -127,9 +131,7 @@ pub fn parse(bytes: &[u8]) -> Result<Enrollment, Error> {
 
 pub async fn import(bytes: &[u8]) -> Result<Value, Error> {
     let enrollment = parse(bytes)?;
-    if !config::is_uuid_valid(&enrollment.account_id) {
-        return Err(Error("invalid_enrollment"));
-    }
+    authorize_account(&enrollment)?;
     let mut store = PushStore::open(config::get_db()).map_err(|e| Error(e.code()))?;
     // A receipt found before DNS avoids network work. A competing import can
     // still create the same receipt while this request checks DNS, so classify
@@ -140,9 +142,7 @@ pub async fn import(bytes: &[u8]) -> Result<Value, Error> {
     {
         Some(receipt) => receipt,
         None => {
-            if !config::is_endpoint_valid(&enrollment.subscription.endpoint).await {
-                return Err(Error("invalid_endpoint"));
-            }
+            authorize_destination(&enrollment).await?;
             store
                 .enroll(&enrollment, push::now())
                 .map_err(|e| Error(e.code()))?
@@ -151,6 +151,20 @@ pub async fn import(bytes: &[u8]) -> Result<Value, Error> {
     let current_v3_replay =
         current_v3_replay_status(&mut store, &enrollment, &receipt, push::now())?;
     Ok(receipt_response(&enrollment, receipt, current_v3_replay))
+}
+
+pub(crate) fn authorize_account(enrollment: &Enrollment) -> Result<(), Error> {
+    if !config::is_uuid_valid(&enrollment.account_id) {
+        return Err(Error("invalid_enrollment"));
+    }
+    Ok(())
+}
+
+pub(crate) async fn authorize_destination(enrollment: &Enrollment) -> Result<(), Error> {
+    if !config::is_endpoint_valid(&enrollment.subscription.endpoint).await {
+        return Err(Error("invalid_endpoint"));
+    }
+    Ok(())
 }
 
 pub fn status(account: Option<&str>) -> Result<Value, Error> {

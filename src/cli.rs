@@ -8,6 +8,7 @@ use crate::config;
 
 mod connection;
 mod enrollment;
+mod pairing;
 mod push;
 mod qrcode;
 mod server;
@@ -36,6 +37,11 @@ enum Command {
     Enrollment {
         #[command(subcommand)]
         command: enrollment::EnrollmentCommand,
+    },
+    /// Manage single-use QR pairing through the protected service account.
+    Pairing {
+        #[command(subcommand)]
+        command: pairing::PairingCommand,
     },
     /// Queue and dispatch encrypted events.
     Push {
@@ -197,6 +203,7 @@ pub async fn cli() {
         Command::Enrollment { command } => {
             print_result(enrollment::run(command).await.map_err(|e| e.0))
         }
+        Command::Pairing { command } => print_result(pairing::run(command).await.map_err(|e| e.0)),
         Command::Push { command } => print_result(push::run(command).await),
         Command::Migrate {} => print_result(
             crate::push_store::PushStore::open(config::get_db())

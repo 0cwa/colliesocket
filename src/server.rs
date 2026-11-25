@@ -26,5 +26,22 @@ pub async fn run() -> Result<(), &'static str> {
         result=web::launch()=>result,
         _=connections::run()=>Err("state_unavailable"),
         _=crate::push::run()=>Err("state_unavailable"),
+        _=reap_pairings()=>Err("state_unavailable"),
+    }
+}
+
+async fn reap_pairings() {
+    use tokio::time::{interval, Duration, MissedTickBehavior};
+
+    let mut ticks = interval(Duration::from_secs(30));
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        ticks.tick().await;
+        let result =
+            tokio::task::spawn_blocking(|| PushStore::open(config::get_db())?.reap_pairings())
+                .await;
+        if !matches!(result, Ok(Ok(()))) {
+            log::warn!("pairing_cleanup_failed");
+        }
     }
 }

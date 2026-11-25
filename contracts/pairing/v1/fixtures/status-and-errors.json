@@ -1,0 +1,11 @@
+[
+  {"pairing_version":1,"session_id":"b9d02ae5-f94a-42e3-a680-542e73cb6fc5","expires_at":1800000000,"state":"active"},
+  {"pairing_version":1,"session_id":"b9d02ae5-f94a-42e3-a680-542e73cb6fc5","expires_at":1800000000,"state":"consumed"},
+  {"pairing_version":1,"session_id":"b9d02ae5-f94a-42e3-a680-542e73cb6fc5","expires_at":1800000000,"state":"expired"},
+  {"pairing_version":1,"session_id":"b9d02ae5-f94a-42e3-a680-542e73cb6fc5","expires_at":1800000000,"state":"cancelled"},
+  {"error":"unsupported_intent"},
+  {"error":"session_consumed"},
+  {"error":"session_expired"},
+  {"error":"invalid_session"},
+  {"error":"invalid_envelope"}
+]
