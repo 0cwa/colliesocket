@@ -1,4 +1,4 @@
-//! Enrollment-v2 control frames. Signal envelope metadata is not authority.
+//! Authenticated Signal subscription controls. Signal envelope metadata is not authority.
 //!
 //! Keep this decoder independent of I/O: only authenticated plaintext is ever
 //! passed to subscription validation or destination-policy checks.
@@ -8,9 +8,11 @@ use serde::Deserialize;
 
 pub const MAGIC: &[u8; 17] = b"COLLIESOCKET-CTRL";
 const HEADER_BYTES: usize = 46;
+#[cfg(test)]
 const NONCE_END: usize = HEADER_BYTES + 12;
 const TAG_BYTES: usize = 16;
 pub const MAX_PLAINTEXT_BYTES: usize = 3072;
+#[cfg(test)]
 pub const MAX_FRAME_BYTES: usize = NONCE_END + MAX_PLAINTEXT_BYTES + TAG_BYTES;
 
 // Deliberately no Debug: these fields include private endpoint and key material.
@@ -52,15 +54,51 @@ pub fn decrypt(
     device: u32,
     control_key: &str,
 ) -> Option<AuthenticatedUpdate> {
-    if !(NONCE_END + TAG_BYTES + 1..=MAX_FRAME_BYTES).contains(&bytes.len())
+    decrypt_for_receiver(bytes, account, device, None, control_key)
+}
+
+/// The clear receiver ID is only a lookup hint. It is also authenticated AAD.
+pub fn receiver_id(bytes: &[u8]) -> Option<String> {
+    if !is_candidate(bytes) || bytes.get(17) != Some(&4) {
+        return None;
+    }
+    let raw = bytes.get(38..54)?;
+    let hex: String = raw.iter().map(|byte| format!("{byte:02x}")).collect();
+    let id = format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    );
+    crate::push_store::canonical_uuid(&id, true).then_some(id)
+}
+
+pub fn decrypt_for_receiver(
+    bytes: &[u8],
+    account: &str,
+    device: u32,
+    receiver: Option<&str>,
+    control_key: &str,
+) -> Option<AuthenticatedUpdate> {
+    let (version, header) = if receiver.is_some() {
+        (4, HEADER_BYTES + 16)
+    } else {
+        (2, HEADER_BYTES)
+    };
+    let nonce_end = header + 12;
+    if !(nonce_end + TAG_BYTES + 1..=nonce_end + MAX_PLAINTEXT_BYTES + TAG_BYTES)
+        .contains(&bytes.len())
         || !is_candidate(bytes)
-        || bytes[17] != 2
+        || bytes[17] != version
         || bytes[18..34] != account_bytes(account)?
         || bytes[34..38] != device.to_be_bytes()
+        || receiver.is_some_and(|id| receiver_id(bytes).as_deref() != Some(id))
     {
         return None;
     }
-    let epoch = u64::from_be_bytes(bytes[38..46].try_into().ok()?);
+    let epoch = u64::from_be_bytes(bytes[header - 8..header].try_into().ok()?);
     if !(1..=crate::push_store::MAX_JSON_INTEGER).contains(&epoch) {
         return None;
     }
@@ -72,14 +110,19 @@ pub fn decrypt(
     let plaintext = decrypt_aead(
         Cipher::aes_256_gcm(),
         &key,
-        Some(&bytes[HEADER_BYTES..NONCE_END]),
-        &bytes[..HEADER_BYTES],
-        &bytes[NONCE_END..tag_start],
+        Some(&bytes[header..nonce_end]),
+        &bytes[..header],
+        &bytes[nonce_end..tag_start],
         &bytes[tag_start..],
     )
     .ok()?;
     // Typed serde decoding rejects duplicate/unknown fields, explicit null,
     // malformed UTF-8, BOM and extra JSON values without exposing plaintext.
+    if receiver.is_some()
+        && plaintext.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{')
+    {
+        return None;
+    }
     let subscription = serde_json::from_slice::<EndpointUpdate>(&plaintext).ok()?;
     Some(AuthenticatedUpdate {
         subscription_epoch: epoch,
@@ -242,5 +285,52 @@ pub mod tests {
         }
         assert!(is_candidate(MAGIC));
         assert!(!is_candidate(b"normal Signal ciphertext"));
+    }
+
+    #[test]
+    fn v4_authenticates_the_independent_receiver_control_vector() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v4/fixtures/control-vector.json"
+        ))
+        .unwrap();
+        let frame: Vec<u8> = vector["frame_hex"]
+            .as_str()
+            .unwrap()
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        let account = vector["account_id"].as_str().unwrap();
+        let receiver = vector["receiver_id"].as_str().unwrap();
+        let device = vector["device_id"].as_u64().unwrap() as u32;
+        let key = vector["control_key"].as_str().unwrap();
+        assert_eq!(receiver_id(&frame).as_deref(), Some(receiver));
+        let update = decrypt_for_receiver(&frame, account, device, Some(receiver), key).unwrap();
+        assert_eq!(update.subscription_epoch, 2);
+        let plain: EndpointUpdate = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v4/fixtures/control-plaintext.json"
+        ))
+        .unwrap();
+        assert_eq!(update.subscription.endpoint, plain.endpoint);
+        assert_eq!(update.subscription.auth, plain.auth);
+        assert_eq!(update.subscription.p256dh, plain.p256dh);
+        assert!(decrypt(&frame, account, device, key).is_none());
+        assert!(decrypt_for_receiver(&frame, account, device + 1, Some(receiver), key).is_none());
+        assert!(decrypt_for_receiver(&frame, account, device, Some(ACCOUNT), key).is_none());
+        let wrong_account = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        assert!(decrypt_for_receiver(&frame, wrong_account, device, Some(receiver), key).is_none());
+        assert!(decrypt_for_receiver(
+            &frame,
+            account,
+            device,
+            Some(receiver),
+            &URL_SAFE_NO_PAD.encode(KEY)
+        )
+        .is_none());
+        for i in 0..frame.len() {
+            let mut changed = frame.clone();
+            changed[i] ^= 1;
+            assert!(decrypt_for_receiver(&changed, account, device, Some(receiver), key).is_none());
+        }
     }
 }

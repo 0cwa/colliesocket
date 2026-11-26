@@ -269,6 +269,14 @@ impl SignalWebSocket {
         let Some(generation) = self.private_generation.as_deref() else {
             return Ok(());
         };
+        if bytes.get(17) == Some(&4) {
+            let Some(receiver) = control::receiver_id(bytes) else {
+                return Ok(());
+            };
+            return self
+                .apply_receiver_control(&co, generation, &receiver, bytes)
+                .await;
+        }
         let context = PushStore::open(config::get_db())
             .and_then(|store| store.control_context_for_connection(&co, generation))
             .map_err(|_| eyre!("control_state_unavailable"))?;
@@ -318,6 +326,54 @@ impl SignalWebSocket {
             // Replays, obsolete sockets and rejected policy/schema changes
             // cannot mutate state or wake the phone; discard them with an ACK.
             Err(_) => Ok(()),
+        }
+    }
+
+    async fn apply_receiver_control(
+        &self,
+        co: &Connection,
+        generation: &str,
+        receiver: &str,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let context = PushStore::open(config::get_db())
+            .and_then(|store| store.receiver_control(co, generation, receiver))
+            .map_err(|_| eyre!("control_state_unavailable"))?;
+        let Some(context) = context else {
+            return Ok(());
+        };
+        let Some(update) = control::decrypt_for_receiver(
+            bytes,
+            &co.uuid,
+            co.device_id,
+            Some(receiver),
+            &context.key,
+        ) else {
+            return Ok(());
+        };
+        // Check the full subscription grammar before any destination lookup.
+        let mut candidate = context.subscription.clone();
+        candidate.endpoint.clone_from(&update.subscription.endpoint);
+        candidate.p256dh.clone_from(&update.subscription.p256dh);
+        candidate.auth.clone_from(&update.subscription.auth);
+        candidate.subscription_epoch = update.subscription_epoch;
+        if candidate.validate().is_err() || !config::is_endpoint_valid(&candidate.endpoint).await {
+            return Ok(());
+        }
+        match PushStore::open(config::get_db()).and_then(|mut store| {
+            store.apply_receiver_control(
+                co,
+                generation,
+                receiver,
+                &context.key,
+                &update,
+                push::now(),
+            )
+        }) {
+            Err(
+                StoreError::StateUnavailable | StoreError::QueueFull | StoreError::CapacityExceeded,
+            ) => Err(eyre!("control_state_unavailable")),
+            _ => Ok(()),
         }
     }
 

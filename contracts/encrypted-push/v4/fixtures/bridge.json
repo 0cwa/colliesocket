@@ -1,0 +1,30 @@
+{
+  "enrollment_version": 4,
+  "request_id": "f0000000-0000-4000-8000-000000000006",
+  "import_seq": 1,
+  "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "device_id": 2,
+  "password": "SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL",
+  "subscription": {
+    "endpoint": "https://push.example.invalid/synthetic-endpoint",
+    "p256dh": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+    "auth": "BTBZMqHH6r4Tts7J_aSIgg",
+    "instance": "fixture-instance",
+    "subscription_epoch": 1,
+    "encryption_required": true,
+    "supported_event_versions": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "capabilities": [
+      "wake",
+      "test",
+      "status"
+    ]
+  },
+  "control_key": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+  "receiver_id": "f0000000-0000-4000-8000-000000000001",
+  "label": "Primary phone"
+}

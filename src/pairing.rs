@@ -4,6 +4,7 @@ use crate::{
     enrollment::{self, Error},
     push,
     push_store::{canonical_uuid, PushStore, StoreError, MAX_JSON_INTEGER},
+    receiver_enrollment::ReceiverEnrollment,
     vapid,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
@@ -41,15 +42,6 @@ impl TryFrom<String> for Intent {
             "pair_bridge" => Ok(Self::PairBridge),
             "add_receiver" => Ok(Self::AddReceiver),
             _ => Err("invalid intent"),
-        }
-    }
-}
-
-impl Intent {
-    fn supported(self) -> Result<(), Error> {
-        match self {
-            Self::PairBridge => Ok(()),
-            Self::AddReceiver => Err(Error("unsupported_intent")),
         }
     }
 }
@@ -98,8 +90,15 @@ pub(crate) fn create(
     host_label: &str,
     provider_origin: Option<&str>,
     ttl: i64,
+    account: Option<&str>,
 ) -> Result<Offer, Error> {
-    intent.supported()?;
+    match (intent, account) {
+        (Intent::PairBridge, None) => (),
+        (Intent::AddReceiver, Some(account)) if canonical_uuid(account, false) => {
+            enrollment::authorize_account_id(account)?;
+        }
+        _ => return Err(Error("invalid_offer")),
+    }
     if !(1..=600).contains(&ttl)
         || !(1..=64).contains(&host_label.len())
         || !host_label.as_bytes()[0].is_ascii_alphanumeric()
@@ -142,6 +141,7 @@ pub(crate) fn create(
             offer.expires_at,
             &serde_json::to_string(&offer).map_err(|_| KEY_ERROR)?,
             &key.raw_private_key().map_err(|_| KEY_ERROR)?,
+            account,
         )
         .map_err(|e| Error(e.code()))?;
     Ok(offer)
@@ -281,7 +281,6 @@ pub(crate) async fn submit(bytes: &[u8]) -> Result<Value, Error> {
     if !(17..=MAX_SEALED_BYTES).contains(&sealed.len()) {
         return Err(INVALID_REQUEST);
     }
-    request.intent.supported()?;
 
     let (offer_json, private) = open_store()?
         .load_pairing(&request.session_id)
@@ -301,45 +300,65 @@ pub(crate) async fn submit(bytes: &[u8]) -> Result<Value, Error> {
     let (ciphertext, tag) = sealed.split_at(sealed.len() - 16);
     let plaintext = decrypt_aead(cipher, &request_key, Some(&nonce), &aad, ciphertext, tag)
         .map_err(|_| INVALID_ENVELOPE)?;
-    let shape: Value = serde_json::from_slice(&plaintext).map_err(|_| Error("invalid_json"))?;
-    if !shape.get("subscription").is_some_and(Value::is_object) {
-        return Err(Error("invalid_enrollment"));
-    }
-    // The shared typed parser still checks for duplicate and unknown members.
-    let enrollment = enrollment::parse(&plaintext)?;
-    if enrollment.enrollment_version != 3 {
-        return Err(Error("unsupported_version"));
-    }
-    enrollment::authorize_account(&enrollment)?;
-    if let Some(expected) = offer.provider_origin {
-        let endpoint =
-            Url::parse(&enrollment.subscription.endpoint).map_err(|_| Error("invalid_endpoint"))?;
-        if endpoint.origin().ascii_serialization() != expected {
-            return Err(Error("invalid_endpoint"));
-        }
-    }
-    enrollment::authorize_destination(&enrollment).await?;
-
+    let bridge = offer.intent == Intent::PairBridge;
     let mut receipt_nonce = [0; 12];
     openssl::rand::rand_bytes(&mut receipt_nonce).map_err(|_| KEY_ERROR)?;
-    let sealed_receipt = open_store()?
-        .enroll_pairing(&request.session_id, &enrollment, |receipt, current| {
-            let receipt =
-                serde_json::to_vec(&enrollment::receipt_response(&enrollment, receipt, current))?;
-            seal_receipt(
-                &receipt_key,
-                &receipt_nonce,
-                &aad,
-                &nonce,
-                &sealed,
-                &receipt,
-            )
+    let seal = |receipt: Value| {
+        seal_receipt(
+            &receipt_key,
+            &receipt_nonce,
+            &aad,
+            &nonce,
+            &sealed,
+            &serde_json::to_vec(&receipt)?,
+        )
+    };
+    let sealed_receipt = if enrollment::is_v4(&plaintext) || !bridge {
+        let enrollment = ReceiverEnrollment::parse(&plaintext, bridge)?;
+        authorize_pairing(
+            &offer,
+            &enrollment.account_id,
+            &enrollment.subscription.endpoint,
+        )
+        .await?;
+        open_store()?.enroll_receiver_pairing(&request.session_id, &enrollment, |receipt| {
+            seal(enrollment.response(receipt))
         })
-        .map_err(|e| Error(e.code()))?;
+    } else {
+        let shape: Value = serde_json::from_slice(&plaintext).map_err(|_| Error("invalid_json"))?;
+        if !shape.get("subscription").is_some_and(Value::is_object) {
+            return Err(Error("invalid_enrollment"));
+        }
+        let enrollment = enrollment::parse(&plaintext)?;
+        if enrollment.enrollment_version != 3 {
+            return Err(Error("unsupported_version"));
+        }
+        authorize_pairing(
+            &offer,
+            &enrollment.account_id,
+            &enrollment.subscription.endpoint,
+        )
+        .await?;
+        open_store()?.enroll_pairing(&request.session_id, &enrollment, |receipt, current| {
+            seal(enrollment::receipt_response(&enrollment, receipt, current))
+        })
+    }
+    .map_err(|e| Error(e.code()))?;
     Ok(json!({
         "pairing_version": 1, "session_id": request.session_id, "intent": request.intent,
         "nonce": B64.encode(receipt_nonce), "ciphertext": B64.encode(sealed_receipt)
     }))
+}
+
+async fn authorize_pairing(offer: &Offer, account: &str, destination: &str) -> Result<(), Error> {
+    enrollment::authorize_account_id(account)?;
+    if let Some(expected) = &offer.provider_origin {
+        let endpoint = Url::parse(destination).map_err(|_| Error("invalid_endpoint"))?;
+        if endpoint.origin().ascii_serialization() != *expected {
+            return Err(Error("invalid_endpoint"));
+        }
+    }
+    enrollment::authorize_endpoint(destination).await
 }
 
 #[cfg(test)]
@@ -448,9 +467,5 @@ mod tests {
                 "invalid_envelope"
             );
         }
-        assert_eq!(
-            Intent::AddReceiver.supported().unwrap_err().0,
-            "unsupported_intent"
-        );
     }
 }

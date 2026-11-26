@@ -1,7 +1,7 @@
 //! Durable encrypted delivery attempts. Provider acceptance is not device delivery.
 use crate::{
     config,
-    push_store::{DeliveryOutcome, Event, PushStore, StoreError, Subscription},
+    push_store::{DeliveryOutcome, Event, PushStore, QueuedEvent, StoreError, Subscription},
     utils::post_allowed,
 };
 use colliesocket_push::SubscriptionKeys;
@@ -39,7 +39,15 @@ pub(crate) fn new_event(
     kind: &str,
     code: Option<&str>,
 ) -> Result<Event, &'static str> {
-    let issued = now();
+    new_event_at(sub, kind, code, now()).map_err(|error| error.code())
+}
+
+pub(crate) fn new_event_at(
+    sub: &Subscription,
+    kind: &str,
+    code: Option<&str>,
+    issued: i64,
+) -> Result<Event, StoreError> {
     let (key_id, import_id) = sub
         .event_identity
         .as_ref()
@@ -52,7 +60,7 @@ pub(crate) fn new_event(
         .unwrap_or((None, None));
     Ok(Event {
         version: sub.event_version(),
-        event_id: uuid_v4()?,
+        event_id: uuid_v4().map_err(|_| StoreError::StateUnavailable)?,
         instance: sub.instance.clone(),
         subscription_epoch: sub.subscription_epoch,
         kind: kind.into(),
@@ -61,6 +69,7 @@ pub(crate) fn new_event(
         code: code.map(str::to_owned),
         key_id,
         import_id,
+        receiver_id: None,
     })
 }
 pub fn enqueue(account: &str, kind: &str, code: Option<&str>) -> Result<Value, &'static str> {
@@ -68,20 +77,18 @@ pub fn enqueue(account: &str, kind: &str, code: Option<&str>) -> Result<Value, &
         return Err("invalid_enrollment");
     }
     let mut store = PushStore::open(config::get_db()).map_err(|e| e.code())?;
-    let sub = store
-        .get_subscription(account)
-        .map_err(|e| e.code())?
-        .ok_or("not_found")?;
-    let event = new_event(&sub, kind, code)?;
-    store
-        .enqueue(account, &event, event.issued_at)
+    let ids = store
+        .enqueue_routes(account, None, kind, code, now())
         .map_err(|e| e.code())?;
-    Ok(json!({"event_id":event.event_id,"queued":true}))
+    if ids.len() == 1 {
+        Ok(json!({"event_id":ids[0],"queued":true}))
+    } else {
+        Ok(json!({"event_ids":ids,"queued":true}))
+    }
 }
 pub fn enrolled(account: &str) -> Result<bool, &'static str> {
     PushStore::open(config::get_db())
-        .and_then(|s| s.get_subscription(account))
-        .map(|s| s.is_some())
+        .and_then(|s| s.is_enrolled(account))
         .map_err(|e| e.code())
 }
 pub fn enqueue_for_connection(
@@ -93,30 +100,12 @@ pub fn enqueue_for_connection(
     if !config::is_uuid_valid(&co.uuid) {
         return Ok(false);
     }
-    let mut store = PushStore::open(config::get_db()).map_err(|e| e.code())?;
-    let Some(sub) = store
-        .subscription_for_connection(
-            &co.uuid,
-            co.device_id,
-            &co.password,
-            &co.endpoint,
-            expected_generation,
-        )
+    Ok(!PushStore::open(config::get_db())
+        .and_then(|mut store| {
+            store.enqueue_routes(&co.uuid, Some((co, expected_generation)), kind, code, now())
+        })
         .map_err(|e| e.code())?
-    else {
-        return Ok(false);
-    };
-    // Preserve this exact snapshot through enqueue's transactional epoch check.
-    let event = new_event(&sub, kind, code)?;
-    match store.enqueue_for_connection(co, expected_generation, &event, event.issued_at) {
-        Ok(queued) => Ok(queued),
-        Err(
-            StoreError::EpochConflict
-            | StoreError::SubscriptionMissing
-            | StoreError::SubscriptionInactive,
-        ) => Ok(false),
-        Err(e) => Err(e.code()),
-    }
+        .is_empty())
 }
 /// Run legacy websocket/CLI wakes under the same cross-process import fence.
 /// The configured 10-second Tokio timeout bounds the callback; SQLite uses a
@@ -180,19 +169,22 @@ pub async fn drain_once() -> Result<bool, &'static str> {
     let Some(claim) = store.claim_due(now()).map_err(|e| e.code())? else {
         return Ok(false);
     };
-    if !config::is_uuid_valid(&claim.account_id) {
-        store
-            .complete(&claim, DeliveryOutcome::PermanentFailure, now())
-            .map_err(|e| e.code())?;
-        return Ok(true);
-    }
     drop(store);
+    deliver(claim).await?;
+    Ok(true)
+}
+
+async fn deliver(claim: QueuedEvent) -> Result<(), &'static str> {
+    if !config::is_uuid_valid(&claim.account_id) {
+        return finish(&claim, DeliveryOutcome::PermanentFailure);
+    }
+    if claim.event.receiver_id.is_some() && !claim_is_current(&claim)? {
+        return Ok(());
+    }
     let body = match encrypt_event(&claim.event, &claim.subscription) {
         Ok(b) => b,
         Err(code) => {
-            PushStore::open(config::get_db())
-                .and_then(|mut s| s.complete(&claim, DeliveryOutcome::PermanentFailure, now()))
-                .map_err(|e| e.code())?;
+            finish(&claim, DeliveryOutcome::PermanentFailure)?;
             return Err(code);
         }
     };
@@ -201,8 +193,12 @@ pub async fn drain_once() -> Result<bool, &'static str> {
         DeliveryOutcome::PermanentFailure
     } else {
         let url = url::Url::parse(&claim.subscription.endpoint).map_err(|_| "invalid_endpoint")?;
-        match post_allowed::post_encrypted(url, body, ttl.clamp(1, 300) as u32).await {
-            Ok(response) => {
+        match post_allowed::post_encrypted_if(url, body, ttl.clamp(1, 300) as u32, || {
+            claim_is_current(&claim)
+        })
+        .await
+        {
+            Ok(Some(response)) => {
                 let status = response.status().as_u16();
                 if let Some(status) = provider_http_failure_status(status) {
                     // Status is useful for provider diagnosis; endpoint and response data may
@@ -217,24 +213,55 @@ pub async fn drain_once() -> Result<bool, &'static str> {
                         .and_then(|h| h.to_str().ok()),
                 )
             }
+            Ok(None) => return Ok(()),
             Err(_) => DeliveryOutcome::Retry { retry_after: None },
         }
     };
-    PushStore::open(config::get_db())
-        .and_then(|mut s| s.complete(&claim, outcome, now()))
-        .map_err(|e| e.code())?;
-    Ok(true)
+    finish(&claim, outcome)
 }
+
+fn claim_is_current(claim: &QueuedEvent) -> Result<bool, &'static str> {
+    PushStore::open(config::get_db())
+        .and_then(|store| store.claim_is_current(claim, now()))
+        .map_err(|e| e.code())
+}
+
+fn finish(claim: &QueuedEvent, outcome: DeliveryOutcome) -> Result<(), &'static str> {
+    PushStore::open(config::get_db())
+        .and_then(|mut store| store.complete(claim, outcome, now))
+        .map_err(|e| e.code())
+}
+
 pub async fn run() {
+    use futures_util::{stream::FuturesUnordered, StreamExt};
+    const MAX_IN_FLIGHT: usize = 32;
+    let mut deliveries = FuturesUnordered::new();
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        HEARTBEAT.store(now(), Ordering::Relaxed);
-        if drain_once().await.is_err() {
-            HEARTBEAT.store(0, Ordering::Relaxed);
-            log::warn!("push_worker_failed");
-        } else {
-            HEARTBEAT.store(now(), Ordering::Relaxed);
+        tokio::select! {
+            _ = interval.tick() => {
+                let result = (|| {
+                    let mut store = PushStore::open(config::get_db())?;
+                    while deliveries.len() < MAX_IN_FLIGHT {
+                        let Some(claim) = store.claim_due(now())? else { break };
+                        deliveries.push(deliver(claim));
+                    }
+                    Ok::<_, StoreError>(())
+                })();
+                if result.is_err() {
+                    HEARTBEAT.store(0, Ordering::Relaxed);
+                    log::warn!("push_worker_failed");
+                } else {
+                    HEARTBEAT.store(now(), Ordering::Relaxed);
+                }
+            }
+            Some(result) = deliveries.next(), if !deliveries.is_empty() => {
+                if result.is_err() {
+                    log::warn!("push_worker_failed");
+                }
+            }
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 

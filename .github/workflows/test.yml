@@ -103,7 +103,7 @@ jobs:
       - name: Install pinned verifier and toolchain
         run: |
           rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
-          python3 -m pip install -r crates/colliesocket-push/tools/requirements.txt
+          python3 -m pip install -r contracts/pairing/v1/tools/requirements.txt -r crates/colliesocket-push/tools/requirements.txt
       - name: Test-only configuration and real websocket delivery
         shell: bash
         run: |

@@ -25,7 +25,7 @@ import uuid
 from fake_signal import FakeSignal, FakeSignalError, create_tls_material, signal_envelope
 from server_cli import (
     ACCOUNT, ENDPOINT_PATH, NOT_RUN, PASSWORD, ROOT, CheckFailure, Harness, Provider,
-    fresh_port, private_file, require,
+    compact, encoded, fresh_port, private_file, require,
 )
 
 
@@ -334,6 +334,114 @@ class SignalHarness(Harness):
             finally:
                 self.stop_worker()
 
+    def receiver_control_and_wake(self):
+        from cryptography.exceptions import InvalidTag
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        self.stage = "Signal v4 receiver rotation and revocation"
+        spec = importlib.util.spec_from_file_location(
+            "pairing_signal_client", ROOT / "contracts/pairing/v1/tools/conformance.py")
+        pairing = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pairing)
+        config = self.make_config(vapid_privkey="DSqYuWchrB6yIMYJtidvqANeRQic4uWy34afzZRsZnI")
+        fixture = ROOT / "contracts/encrypted-push/v4/fixtures/receiver.json"
+        routes = []
+        for letter, byte in [("A", 71), ("B", 72)]:
+            receiver = json.loads(fixture.read_text())
+            path = f"/SYNTHETIC-SIGNAL-V4-{letter}"
+            receiver.update(receiver_id=str(uuid.uuid4()), request_id=str(uuid.uuid4()),
+                            control_key=encoded(bytes([byte] * 32)))
+            receiver["subscription"].update(endpoint=self.provider.origin + path,
+                                            p256dh=self.metadata["p256dh"],
+                                            auth=encoded(bytes([byte] * 16)))
+            offer = self.cli("pairing", "create", "--intent", "add_receiver",
+                             "--account-id", ACCOUNT, "--host-label", "Signal receiver", config=config)
+            client = X25519PrivateKey.generate()
+            request = pairing.seal_request(offer, client, os.urandom(12), compact(receiver))
+            response = self.cli("pairing", "submit", "--stdin", data=compact(request), config=config)
+            require(pairing.open_receipt(offer, request, response, client)["receiver_id"] == receiver["receiver_id"],
+                    "Signal receiver pairing returned the wrong ID")
+            routes.append((path, receiver))
+        (path_a, a), (path_b, b) = routes
+        rotated_path = "/SYNTHETIC-SIGNAL-V4-ROTATED"
+        rotated_auth = bytes([73] * 16)
+
+        def capture(expected, kind, code=None):
+            events = {}
+            for _ in expected:
+                path, headers, body = self.provider.take(timeout=5)
+                require(path in expected and path not in events, "Signal missed or repeated a receiver")
+                require(headers.get("content-encoding") == "aes128gcm", "Signal sent an unencrypted receiver event")
+                receiver, auth, epoch = expected[path]
+                event = json.loads(self.checker.decrypt(body, self.private, auth))
+                require(event["kind"] == kind and event.get("code") == code, "unexpected Signal receiver event")
+                if receiver is None:
+                    require(event["version"] == 3 and event["subscription_epoch"] == 2,
+                            "v4 control changed the v3 primary")
+                else:
+                    require(event["version"] == 4 and event["receiver_id"] == receiver["receiver_id"]
+                            and event["subscription_epoch"] == epoch and event["import_id"] == receiver["request_id"],
+                            "Signal event disagrees with the target's receiver state")
+                    if path == rotated_path:
+                        try:
+                            self.checker.decrypt(body, self.private, self.checker.b64(a["subscription"]["auth"]))
+                        except InvalidTag:
+                            pass
+                        else:
+                            raise CheckFailure("rotated receiver ciphertext accepted the old auth secret")
+                events[path] = event["event_id"]
+            require(len(set(events.values())) == len(events), "Signal fan-out reused an event ID")
+
+        a_target = (a, self.checker.b64(a["subscription"]["auth"]), 1)
+        b_target = (b, self.checker.b64(b["subscription"]["auth"]), 1)
+        legacy_target = (None, self.auth, 2)
+
+        def control(signal, epoch, key):
+            header = (b"COLLIESOCKET-CTRL\x04" + uuid.UUID(ACCOUNT).bytes
+                      + a["device_id"].to_bytes(4, "big") + uuid.UUID(a["receiver_id"]).bytes
+                      + epoch.to_bytes(8, "big"))
+            nonce = os.urandom(12)
+            payload = {"endpoint": self.provider.origin + rotated_path,
+                       "p256dh": self.metadata["p256dh"], "auth": encoded(rotated_auth)}
+            frame = header + nonce + AESGCM(self.checker.b64(key)).encrypt(nonce, compact(payload), header)
+            signal.wait_ack(signal.send_envelope(signal_envelope(content=frame, urgent=True)))
+            self.barrier(signal)
+
+        def wake(signal):
+            signal.wait_ack(signal.send_envelope(signal_envelope(urgent=True)))
+            self.barrier(signal)
+
+        credentials = f"{ACCOUNT}.{self.enrollment['device_id']}:{PASSWORD}"
+        with FakeSignal(self.directory / "v4-signal-tls", credentials) as signal:
+            try:
+                self.start_signal_worker(signal)
+                signal.wait_connected()
+                capture({path_a: a_target, path_b: b_target}, "status", "enrollment_imported")
+                control(signal, 2, b["control_key"])
+                self.require_no_push()
+                wake(signal)
+                capture({ENDPOINT_PATH: legacy_target, path_a: a_target, path_b: b_target}, "wake")
+                control(signal, 3, a["control_key"])
+                rotated_target = (a, rotated_auth, 3)
+                capture({rotated_path: rotated_target}, "status", "subscription_updated")
+                self.require_no_push()
+                wake(signal)
+                capture({ENDPOINT_PATH: legacy_target, rotated_path: rotated_target, path_b: b_target}, "wake")
+                self.mark("real Signal wake fans out to v3 and both v4 receivers; wrong receiver key is silent and authenticated control rotates only its route")
+                self.cli("enrollment", "revoke", "--account-id", ACCOUNT, "--receiver-id", a["receiver_id"])
+                control(signal, 4, a["control_key"])
+                self.require_no_push()
+                wake(signal)
+                capture({ENDPOINT_PATH: legacy_target, path_b: b_target}, "wake")
+                self.require_no_push()
+                self.mark("revoked control over Signal creates no wake or confirmation; legacy primary and remaining receiver keep delivering")
+            finally:
+                self.stop_worker()
+        markers = [path_a, path_b, rotated_path, a["control_key"], b["control_key"], encoded(rotated_auth)]
+        require(all(marker.encode() not in output for marker in markers for output in self.outputs),
+                "v4 Signal trace contained an endpoint or key")
+
     def provider_failure_cases(self):
         """Exercise failures in a separate enrollment so stale state does not affect other cases."""
         self.stage = "provider failure fixture enrollment"
@@ -452,6 +560,7 @@ class SignalHarness(Harness):
                 self.stop_worker()
 
         self.v3_private_import_and_worker_events()
+        self.receiver_control_and_wake()
 
         failure_directory = self.directory / "provider-failures"
         failure_directory.mkdir(mode=0o700)

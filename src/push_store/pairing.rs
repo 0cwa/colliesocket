@@ -50,6 +50,10 @@ fn close(db: &Connection, id: &str, state: &str) -> Result<()> {
     if changed != 1 {
         return Err(StoreError::StateUnavailable);
     }
+    db.execute(
+        "DELETE FROM receiver_pairing_targets WHERE session_id=?1",
+        [id],
+    )?;
     Ok(())
 }
 
@@ -62,6 +66,11 @@ fn prune(db: &Connection, now: i64) -> Result<()> {
         "UPDATE pairing_sessions SET state='expired',offer_json=NULL,private_key=NULL
          WHERE state='active' AND expires_at<=?1",
         [now],
+    )?;
+    db.execute(
+        "DELETE FROM receiver_pairing_targets WHERE session_id IN
+         (SELECT session_id FROM pairing_sessions WHERE state!='active')",
+        [],
     )?;
     Ok(())
 }
@@ -83,6 +92,7 @@ impl PushStore {
         expires_at: i64,
         offer_json: &str,
         private_key: &[u8],
+        account: Option<&str>,
     ) -> Result<()> {
         let tx = self
             .db
@@ -101,6 +111,14 @@ impl PushStore {
             "INSERT INTO pairing_sessions VALUES(?1,?2,?3,'active',?4,?5)",
             params![id, created_at, expires_at, offer_json, private_key],
         )?;
+        if let Some(account) = account {
+            let (_, generation) = receivers::bridge_generation(&tx, account)?
+                .ok_or(StoreError::SubscriptionMissing)?;
+            tx.execute(
+                "INSERT INTO receiver_pairing_targets VALUES(?1,?2,?3)",
+                params![id, account, generation],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -164,6 +182,44 @@ impl PushStore {
             return Err(StoreError::UnsupportedVersion);
         }
         let hash = digest(enrollment)?;
+        self.consume_pairing(id, |tx, now, target| {
+            if target.is_some() {
+                return Err(StoreError::InvalidSession);
+            }
+            let receipt = Self::enroll_in(tx, enrollment, now, &hash)?;
+            let current = receipt.replayed
+                && Self::retry_current_import_status_in(tx, enrollment, now, &hash)?;
+            make_receipt(receipt, current)
+        })
+    }
+
+    pub(crate) fn enroll_receiver_pairing<T>(
+        &mut self,
+        id: &str,
+        enrollment: &crate::receiver_enrollment::ReceiverEnrollment,
+        make_receipt: impl FnOnce(EnrollmentResult) -> Result<T>,
+    ) -> Result<T> {
+        self.consume_pairing(id, |tx, now, target| {
+            match (enrollment.password.is_some(), target) {
+                (true, None) => (),
+                (false, Some((account, generation))) if account == enrollment.account_id => {
+                    if receivers::bridge_generation(tx, &account)?
+                        != Some((enrollment.device_id, generation))
+                    {
+                        return Err(StoreError::InvalidSession);
+                    }
+                }
+                _ => return Err(StoreError::InvalidEnrollment),
+            }
+            make_receipt(receivers::install(tx, enrollment, now)?)
+        })
+    }
+
+    fn consume_pairing<T>(
+        &mut self,
+        id: &str,
+        install: impl FnOnce(&Transaction<'_>, i64, Option<(String, String)>) -> Result<T>,
+    ) -> Result<T> {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -173,17 +229,20 @@ impl PushStore {
         }
         if let Err(error) = session_status(&tx, id, now).and_then(active) {
             if error == StoreError::SessionExpired {
-                // Record the observed expiry even if the deadline crossed
-                // while checking the enrollment policy.
+                // The deadline may cross while checking enrollment policy.
                 prune(&tx, now)?;
                 tx.commit()?;
             }
             return Err(error);
         }
-        let receipt = Self::enroll_in(&tx, enrollment, now, &hash)?;
-        let current =
-            receipt.replayed && Self::retry_current_import_status_in(&tx, enrollment, now, &hash)?;
-        let response = make_receipt(receipt, current)?;
+        let target = tx
+            .query_row(
+                "SELECT account_id,generation FROM receiver_pairing_targets WHERE session_id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let response = install(&tx, now, target)?;
         close(&tx, id, "consumed")?;
         tx.commit()?;
         Ok(response)

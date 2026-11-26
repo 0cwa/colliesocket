@@ -1,0 +1,12 @@
+{
+  "version": 4,
+  "instance": "second-instance",
+  "subscription_epoch": 1,
+  "issued_at": 1800000000,
+  "expires_at": 1800000300,
+  "event_id": "f0000000-0000-4000-8000-000000000004",
+  "kind": "status",
+  "import_id": "f0000000-0000-4000-8000-000000000003",
+  "receiver_id": "f0000000-0000-4000-8000-000000000002",
+  "code": "enrollment_imported"
+}

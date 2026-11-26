@@ -107,12 +107,12 @@ pub(crate) fn read_bounded_stdin(limit: u64) -> Result<Vec<u8>, Error> {
     bounded_read(io::stdin().lock(), limit)
 }
 
-pub fn parse(bytes: &[u8]) -> Result<Enrollment, Error> {
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
     if bytes.len() as u64 > MAX_IMPORT_BYTES {
         return Err(Error("input_too_large"));
     }
     let text = std::str::from_utf8(bytes).map_err(|_| Error("invalid_json"))?;
-    let value: Enrollment = serde_json::from_str(text).map_err(|error| {
+    serde_json::from_str(text).map_err(|error| {
         // Typed decoding preserves duplicate-field rejection while keeping
         // valid JSON with schema errors distinct from malformed JSON.
         let code = if error.is_syntax()
@@ -124,12 +124,19 @@ pub fn parse(bytes: &[u8]) -> Result<Enrollment, Error> {
             "invalid_enrollment"
         };
         Error(code)
-    })?;
+    })
+}
+
+pub fn parse(bytes: &[u8]) -> Result<Enrollment, Error> {
+    let value = decode(bytes)?;
     push_store::validate_enrollment(&value).map_err(|e| Error(e.code()))?;
     Ok(value)
 }
 
 pub async fn import(bytes: &[u8]) -> Result<Value, Error> {
+    if is_v4(bytes) {
+        return crate::receiver_enrollment::import(bytes).await;
+    }
     let enrollment = parse(bytes)?;
     authorize_account(&enrollment)?;
     let mut store = PushStore::open(config::get_db()).map_err(|e| Error(e.code()))?;
@@ -153,15 +160,29 @@ pub async fn import(bytes: &[u8]) -> Result<Value, Error> {
     Ok(receipt_response(&enrollment, receipt, current_v3_replay))
 }
 
+pub(crate) fn is_v4(bytes: &[u8]) -> bool {
+    bytes.len() as u64 <= MAX_IMPORT_BYTES
+        && serde_json::from_slice::<Value>(bytes)
+            .is_ok_and(|value| value["enrollment_version"].as_u64() == Some(4))
+}
+
 pub(crate) fn authorize_account(enrollment: &Enrollment) -> Result<(), Error> {
-    if !config::is_uuid_valid(&enrollment.account_id) {
+    authorize_account_id(&enrollment.account_id)
+}
+
+pub(crate) fn authorize_account_id(account: &str) -> Result<(), Error> {
+    if !config::is_uuid_valid(account) {
         return Err(Error("invalid_enrollment"));
     }
     Ok(())
 }
 
 pub(crate) async fn authorize_destination(enrollment: &Enrollment) -> Result<(), Error> {
-    if !config::is_endpoint_valid(&enrollment.subscription.endpoint).await {
+    authorize_endpoint(&enrollment.subscription.endpoint).await
+}
+
+pub(crate) async fn authorize_endpoint(endpoint: &str) -> Result<(), Error> {
+    if !config::is_endpoint_valid(endpoint).await {
         return Err(Error("invalid_endpoint"));
     }
     Ok(())
@@ -173,13 +194,29 @@ pub fn status(account: Option<&str>) -> Result<Value, Error> {
     if account.is_none() {
         return Ok(json!({"enrollments": registrations}));
     }
-    let registration = registrations.into_iter().next().ok_or(Error("not_found"))?;
+    let registration = registrations.first().ok_or(Error("not_found"))?;
+    if registrations
+        .iter()
+        .any(|registration| registration.receiver_id.is_some())
+    {
+        return Ok(json!({"enrollments": registrations}));
+    }
     Ok(json!({
         "instance": registration.instance,
         "subscription_epoch": registration.subscription_epoch,
         "state": registration.state,
         "event_version": registration.selected_event_version,
     }))
+}
+
+pub fn revoke(account: &str, receiver: &str) -> Result<Value, Error> {
+    if !push_store::canonical_uuid(account, false) || !push_store::canonical_uuid(receiver, true) {
+        return Err(Error("invalid_enrollment"));
+    }
+    let revoked = PushStore::open(config::get_db())
+        .and_then(|mut store| store.revoke_receiver(account, receiver))
+        .map_err(|error| Error(error.code()))?;
+    Ok(json!({"revoked": revoked}))
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ mod pairing;
 mod push;
 mod push_store;
 mod qrcode;
+mod receiver_enrollment;
 mod server;
 mod utils;
 mod vapid;

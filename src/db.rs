@@ -130,7 +130,7 @@ impl MollySocketDb {
         expected_generation: Option<&str>,
     ) -> Result<bool> {
         Ok(self.db.lock().unwrap().execute(
-            "UPDATE connections SET forbidden=1 WHERE uuid=?1 AND device_id=?2 AND password=?3 AND endpoint=?4 AND forbidden=0 AND (SELECT generation FROM encrypted_subscription_generations WHERE account_id=?1) IS ?5",
+            "UPDATE connections SET forbidden=1 WHERE uuid=?1 AND device_id=?2 AND password=?3 AND endpoint=?4 AND forbidden=0 AND COALESCE((SELECT generation FROM receiver_bridges WHERE account_id=?1),(SELECT generation FROM encrypted_subscription_generations WHERE account_id=?1)) IS ?5",
             rusqlite::params![co.uuid,co.device_id,co.password,co.endpoint,expected_generation])?>0)
     }
 
