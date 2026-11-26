@@ -1,0 +1,116 @@
+[
+  {
+    "schema": "enrollment",
+    "source": "bridge",
+    "remove": "password"
+  },
+  {
+    "schema": "enrollment",
+    "source": "bridge",
+    "field": "receiver_id",
+    "value": "F0000000-0000-4000-8000-000000000001"
+  },
+  {
+    "schema": "receiver-enrollment",
+    "source": "receiver",
+    "field": "password",
+    "value": "SYNTHETIC-NOT-A-SIGNAL-CREDENTIAL"
+  },
+  {
+    "schema": "receiver-enrollment",
+    "source": "receiver",
+    "field": "label",
+    "value": null
+  },
+  {
+    "schema": "receiver-enrollment",
+    "source": "receiver",
+    "field": "label",
+    "value": "line\nbreak"
+  },
+  {
+    "schema": "receiver-enrollment",
+    "source": "receiver",
+    "field": "control_key",
+    "value": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj9"
+  },
+  {
+    "schema": "receiver-enrollment",
+    "source": "receiver",
+    "field": "import_seq",
+    "value": true
+  },
+  {
+    "schema": "receiver-enrollment",
+    "source": "receiver",
+    "field": "subscription.subscription_epoch",
+    "value": 1.0
+  },
+  {
+    "schema": "receiver-enrollment",
+    "source": "receiver",
+    "field": "subscription.supported_event_versions",
+    "value": [
+      1,
+      2,
+      3
+    ]
+  },
+  {
+    "schema": "receiver-enrollment",
+    "source": "receiver",
+    "field": "subscription.p256dh",
+    "value": "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  {
+    "schema": "receiver-enrollment",
+    "source": "receiver",
+    "field": "subscription.endpoint",
+    "value": "https://user@push.example.test/second"
+  },
+  {
+    "schema": "event",
+    "source": "wake",
+    "remove": "receiver_id"
+  },
+  {
+    "schema": "event",
+    "source": "wake",
+    "remove": "import_id"
+  },
+  {
+    "schema": "event",
+    "source": "wake",
+    "field": "code",
+    "value": "enrollment_imported"
+  },
+  {
+    "schema": "event",
+    "source": "wake",
+    "field": "key_id",
+    "value": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8"
+  },
+  {
+    "schema": "event",
+    "source": "imported",
+    "remove": "code"
+  },
+  {
+    "schema": "event",
+    "source": "wake",
+    "field": "expires_at",
+    "value": 1800000301
+  },
+  {
+    "schema": "receipt",
+    "source": "receipt",
+    "field": "label",
+    "value": "extra"
+  },
+  {
+    "schema": "control",
+    "source": "control-plaintext",
+    "field": "receiver_id",
+    "value": "f0000000-0000-4000-8000-000000000002"
+  }
+]

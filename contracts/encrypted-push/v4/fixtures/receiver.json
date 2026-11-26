@@ -1,0 +1,29 @@
+{
+  "enrollment_version": 4,
+  "request_id": "f0000000-0000-4000-8000-000000000003",
+  "import_seq": 1,
+  "account_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "device_id": 2,
+  "subscription": {
+    "endpoint": "https://push.example.test/second",
+    "p256dh": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+    "auth": "EBESExQVFhcYGRobHB0eHw",
+    "instance": "second-instance",
+    "subscription_epoch": 1,
+    "encryption_required": true,
+    "supported_event_versions": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "capabilities": [
+      "wake",
+      "test",
+      "status"
+    ]
+  },
+  "control_key": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+  "receiver_id": "f0000000-0000-4000-8000-000000000002",
+  "label": "Secondary phone"
+}

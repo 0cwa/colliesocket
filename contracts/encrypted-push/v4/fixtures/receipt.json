@@ -1,0 +1,15 @@
+{
+  "enrollment_version": 4,
+  "selected_event_version": 4,
+  "request_id": "f0000000-0000-4000-8000-000000000003",
+  "receiver_id": "f0000000-0000-4000-8000-000000000002",
+  "instance": "second-instance",
+  "subscription_epoch": 1,
+  "capabilities": [
+    "wake",
+    "test",
+    "status"
+  ],
+  "status": "accepted",
+  "replayed": false
+}
