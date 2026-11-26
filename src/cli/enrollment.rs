@@ -11,6 +11,13 @@ pub enum EnrollmentCommand {
     },
     /// List local registrations, or show encrypted status for one account.
     Status { account_id: Option<String> },
+    /// Revoke one encrypted receiver without unlinking the bridge.
+    Revoke {
+        #[arg(long)]
+        account_id: String,
+        #[arg(long)]
+        receiver_id: String,
+    },
 }
 pub async fn run(
     command: &EnrollmentCommand,
@@ -26,6 +33,10 @@ pub async fn run(
             };
             crate::enrollment::import(&bytes).await
         }
+        EnrollmentCommand::Revoke {
+            account_id,
+            receiver_id,
+        } => crate::enrollment::revoke(account_id, receiver_id),
         EnrollmentCommand::Status { account_id } => {
             crate::enrollment::status(account_id.as_deref())
         }

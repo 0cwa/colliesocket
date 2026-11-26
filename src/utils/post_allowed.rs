@@ -83,10 +83,15 @@ impl Payload {
 }
 
 /// A provider response is never proof of device delivery.
-pub async fn post_encrypted(url: Url, body: Vec<u8>, ttl: u32) -> Result<reqwest::Response> {
+pub async fn post_encrypted_if(
+    url: Url,
+    body: Vec<u8>,
+    ttl: u32,
+    current: impl FnOnce() -> Result<bool, &'static str>,
+) -> Result<Option<reqwest::Response>> {
     let payload = Payload::Encrypted(body);
     payload.validate(ttl)?;
-    post_configured(url, payload, ttl).await
+    post_configured(url, payload, ttl, current).await
 }
 
 /// Exactly one generic wake payload; no caller-supplied plaintext or fake encoding.
@@ -94,10 +99,17 @@ pub async fn post_legacy_wake(url: Url) -> Result<reqwest::Response> {
     if !config::legacy_wake_enabled() {
         return Err(eyre!(Error::LegacyDisabled));
     }
-    post_configured(url, Payload::LegacyWake, 300).await
+    post_configured(url, Payload::LegacyWake, 300, || Ok(true))
+        .await?
+        .ok_or_else(|| eyre!(Error::TransportFailed))
 }
 
-async fn post_configured(url: Url, payload: Payload, ttl: u32) -> Result<reqwest::Response> {
+async fn post_configured(
+    url: Url,
+    payload: Payload,
+    ttl: u32,
+    current: impl FnOnce() -> Result<bool, &'static str>,
+) -> Result<Option<reqwest::Response>> {
     // Bound the entire operation, including policy DNS and send-time re-resolution.
     tokio::time::timeout(REQUEST_TIMEOUT, async {
         if !config::is_endpoint_valid(url.as_str()).await {
@@ -105,7 +117,7 @@ async fn post_configured(url: Url, payload: Payload, ttl: u32) -> Result<reqwest
         }
         let explicit_origin = config::is_endpoint_allowed_by_user(&url).then(|| url.origin());
         let authorization = vapid::get_vapid_header(url.origin()).ok();
-        post_with_policy(url, payload, ttl, explicit_origin, authorization).await
+        post_with_guard(url, payload, ttl, explicit_origin, authorization, current).await
     })
     .await
     .map_err(|_| eyre!(Error::TransportTimeout))?
@@ -157,6 +169,7 @@ async fn checked_client(url: &Url, allowed: Option<&Origin>) -> Result<reqwest::
 }
 
 /// Tests supply explicit policy without racing global configuration.
+#[cfg(test)]
 async fn post_with_policy(
     url: Url,
     payload: Payload,
@@ -164,6 +177,21 @@ async fn post_with_policy(
     explicit_origin: Option<Origin>,
     authorization: Option<String>,
 ) -> Result<reqwest::Response> {
+    post_with_guard(url, payload, ttl, explicit_origin, authorization, || {
+        Ok(true)
+    })
+    .await?
+    .ok_or_else(|| eyre!(Error::TransportFailed))
+}
+
+async fn post_with_guard(
+    url: Url,
+    payload: Payload,
+    ttl: u32,
+    explicit_origin: Option<Origin>,
+    authorization: Option<String>,
+    current: impl FnOnce() -> Result<bool, &'static str>,
+) -> Result<Option<reqwest::Response>> {
     payload.validate(ttl)?;
     let client = checked_client(&url, explicit_origin.as_ref()).await?;
     let mut request = client
@@ -182,7 +210,12 @@ async fn post_with_policy(
     if let Some(authorization) = authorization {
         request = request.header("Authorization", authorization);
     }
-    request.send().await.map_err(|error| {
+    // Recheck after DNS and client setup. Once authorized here the request
+    // is in flight, so a later local revoke cannot recall it from a provider.
+    if !current().map_err(|code| eyre!(code))? {
+        return Ok(None);
+    }
+    request.send().await.map(Some).map_err(|error| {
         // Drop the source error: reqwest Display/Debug includes endpoint tokens.
         if error.is_timeout() {
             eyre!(Error::TransportTimeout)

@@ -21,6 +21,8 @@ pub(crate) enum PairingCommand {
         ttl_seconds: i64,
         #[arg(long, value_enum, default_value = "pair_bridge")]
         intent: PairingIntent,
+        #[arg(long)]
+        account_id: Option<String>,
         /// Also render the public offer as a terminal QR on stderr.
         #[arg(long)]
         qr: bool,
@@ -45,14 +47,20 @@ pub(super) async fn run(command: &PairingCommand) -> Result<serde_json::Value, e
             provider_origin,
             ttl_seconds,
             intent,
+            account_id,
             qr,
         } => {
             let intent = match intent {
                 PairingIntent::PairBridge => pairing::Intent::PairBridge,
                 PairingIntent::AddReceiver => pairing::Intent::AddReceiver,
             };
-            let offer =
-                pairing::create(intent, host_label, provider_origin.as_deref(), *ttl_seconds)?;
+            let offer = pairing::create(
+                intent,
+                host_label,
+                provider_origin.as_deref(),
+                *ttl_seconds,
+                account_id.as_deref(),
+            )?;
             let offer =
                 serde_json::to_value(offer).map_err(|_| enrollment::Error("state_unavailable"))?;
             if *qr {

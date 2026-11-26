@@ -16,12 +16,16 @@ enum Mode {
     EncryptedV1,
     EncryptedV2,
     EncryptedV3,
+    EncryptedV4,
     LegacyUnkeyed,
 }
 
 #[derive(Serialize)]
 pub(crate) struct RegistrationStatus {
     account_id: String,
+    pub(crate) receiver_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
     device_id: u32,
     mode: Mode,
     enrollment_version: Option<u32>,
@@ -31,6 +35,8 @@ pub(crate) struct RegistrationStatus {
     pub(crate) instance: Option<String>,
     endpoint_origin: Option<String>,
     active: bool,
+    #[serde(rename = "state", skip_serializing_if = "Option::is_none")]
+    receiver_state: Option<AccountState>,
     #[serde(skip)]
     pub(crate) state: Option<AccountState>,
 }
@@ -81,13 +87,18 @@ pub(crate) fn read(path: &Path, account: Option<&str>) -> Result<Vec<Registratio
         } else {
             "s.control_key IS NOT NULL"
         };
+        let hide_archived = if version >= 7 {
+            "AND NOT EXISTS(SELECT 1 FROM receiver_bridges b WHERE b.account_id=c.uuid)"
+        } else {
+            ""
+        };
         format!(
             "SELECT c.uuid, c.device_id, c.endpoint, c.forbidden, s.state, s.subscription_epoch,
                     json_extract(s.subscription_json, '$.instance'),
                     json_extract(s.subscription_json, '$.supported_event_versions'),
                     {has_control_key}
              FROM connections c LEFT JOIN encrypted_subscriptions s ON s.account_id = c.uuid
-             WHERE ?1 IS NULL OR (s.state IS NOT NULL AND c.uuid = ?1)
+             WHERE (?1 IS NULL OR (s.state IS NOT NULL AND c.uuid = ?1)) {hide_archived}
              ORDER BY c.uuid"
         )
     };
@@ -101,6 +112,48 @@ pub(crate) fn read(path: &Path, account: Option<&str>) -> Result<Vec<Registratio
     while let Some(row) = rows.next()? {
         statuses.push(registration(row, version)?);
     }
+    if version >= 7 {
+        let mut receivers = snapshot.prepare(
+            "SELECT r.account_id,c.device_id,r.receiver_id,r.label,r.instance,r.subscription_epoch,
+                    r.state,r.control_key IS NOT NULL,json_extract(r.subscription_json,'$.endpoint'),c.forbidden
+             FROM push_receivers r JOIN connections c ON c.uuid=r.account_id
+             WHERE ?1 IS NULL OR r.account_id=?1 ORDER BY r.account_id,r.receiver_id",
+        )?;
+        let mut rows = receivers.query([account])?;
+        while let Some(row) = rows.next()? {
+            let receiver_id: String = row.get(2)?;
+            let label: Option<String> = row.get(3)?;
+            let instance: String = row.get(4)?;
+            let state = AccountState::from_db(&row.get::<_, String>(6)?)?;
+            let endpoint: Option<String> = row.get(8)?;
+            if !super::canonical_uuid(&receiver_id, true)
+                || !valid_instance(&instance)
+                || label
+                    .as_deref()
+                    .is_some_and(|label| !crate::receiver_enrollment::valid_label(label))
+            {
+                return Err(StoreError::StateUnavailable);
+            }
+            statuses.push(RegistrationStatus {
+                account_id: row.get(0)?,
+                device_id: row.get(1)?,
+                receiver_id: Some(receiver_id),
+                label,
+                mode: Mode::EncryptedV4,
+                enrollment_version: Some(4),
+                selected_event_version: Some(4),
+                has_control_key: row.get(7)?,
+                subscription_epoch: Some(row_epoch(row, 5)?),
+                instance: Some(instance),
+                endpoint_origin: endpoint.as_deref().and_then(endpoint_origin),
+                active: state == AccountState::Active && !row.get::<_, bool>(9)?,
+                receiver_state: Some(state),
+                state: Some(state),
+            });
+        }
+        statuses
+            .sort_by(|a, b| (&a.account_id, &a.receiver_id).cmp(&(&b.account_id, &b.receiver_id)));
+    }
     Ok(statuses)
 }
 
@@ -108,6 +161,9 @@ fn registration(row: &Row<'_>, schema_version: u32) -> Result<RegistrationStatus
     let endpoint: Option<String> = row.get(2)?;
     let mut status = RegistrationStatus {
         account_id: row.get(0)?,
+        receiver_id: None,
+        label: None,
+        receiver_state: None,
         device_id: row.get(1)?,
         endpoint_origin: endpoint.as_deref().and_then(endpoint_origin),
         mode: Mode::LegacyUnkeyed,

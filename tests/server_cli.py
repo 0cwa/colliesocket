@@ -95,6 +95,7 @@ class Provider:
         self.requests = queue.Queue()
         self.statuses = queue.Queue()
         self.count = 0
+        self.respond_by_path = {}
         provider = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -109,10 +110,14 @@ class Provider:
                 headers = {key.lower(): value for key, value in self.headers.items()}
                 provider.count += 1
                 provider.requests.put((self.path, headers, body))
-                try:
-                    status = provider.statuses.get_nowait()
-                except queue.Empty:
-                    status = 202
+                responder = provider.respond_by_path.get(self.path)
+                if responder:
+                    status = responder()
+                else:
+                    try:
+                        status = provider.statuses.get_nowait()
+                    except queue.Empty:
+                        status = 202
                 self.send_response(status)
                 self.send_header("Content-Length", "0")
                 self.send_header("Connection", "close")
@@ -345,7 +350,7 @@ class Harness:
                     ])
                 connection.execute(f"PRAGMA user_version={version}")
             legacy = {
-                "account_id": LEGACY_ACCOUNT, "device_id": 7, "mode": "legacy_unkeyed",
+                "account_id": LEGACY_ACCOUNT, "device_id": 7, "mode": "legacy_unkeyed", "receiver_id": None,
                 "enrollment_version": None, "selected_event_version": None, "has_control_key": False,
                 "subscription_epoch": None, "instance": None,
                 "endpoint_origin": "https://push.example.invalid", "active": True,
@@ -396,7 +401,7 @@ class Harness:
                         (account,),
                     )
             expected.append({
-                "account_id": account, "device_id": 4, "mode": f"encrypted_v{event_version}",
+                "account_id": account, "device_id": 4, "mode": f"encrypted_v{event_version}", "receiver_id": None,
                 "enrollment_version": version if keyed else None, "selected_event_version": event_version,
                 "has_control_key": keyed, "subscription_epoch": 1, "instance": "cli-fixture-instance",
                 "endpoint_origin": self.provider.origin, "active": version != 3,
@@ -452,11 +457,11 @@ class Harness:
 
     def migrations(self):
         self.stage = "migration and protected state modes"
-        require(self.cli("migrate") == {"schema_version": 6}, "migration did not select schema6")
+        require(self.cli("migrate") == {"schema_version": 7}, "migration did not select schema7")
         require(stat.S_IMODE(self.db.parent.stat().st_mode) == 0o700, "state directory is not0700")
         require(stat.S_IMODE(self.db.stat().st_mode) == 0o600, "state database is not0600")
-        require(self.rows("PRAGMA user_version") == [(6,)], "SQLite schema marker differs from CLI")
-        require(self.cli("migrate") == {"schema_version": 6}, "migration is not idempotent")
+        require(self.rows("PRAGMA user_version") == [(7,)], "SQLite schema marker differs from CLI")
+        require(self.cli("migrate") == {"schema_version": 7}, "migration is not idempotent")
         before = self.snapshot()
         self.db.chmod(0o644)
         try:
@@ -488,7 +493,7 @@ class Harness:
                 self.cli("migrate", config=config, error="state_unavailable")
                 require(self.rows("PRAGMA user_version", database=database) == [(99,)], "future schema was downgraded")
             else:
-                require(self.cli("migrate", config=config) == {"schema_version": 6}, "upstream schema migration failed")
+                require(self.cli("migrate", config=config) == {"schema_version": 7}, "upstream schema migration failed")
             require(self.rows("SELECT * FROM connections", database=database) == [original], "migration changed legacy credentials or forbidden state")
         self.mark("upstream schemas0/1 preserve connection tuple and forbidden flag;future schema fails closed")
 
@@ -499,7 +504,7 @@ class Harness:
         original = alternate.read_bytes()
         literal = self.directory / "file:uri-state.db"
         config = self.make_config(db=literal.name, legacy_wake_until=int(time.time()) + 120)
-        require(self.cli("migrate", config=config) == {"schema_version": 6}, "literal filename did not migrate")
+        require(self.cli("migrate", config=config) == {"schema_version": 7}, "literal filename did not migrate")
         self.cli("connection", "add", LEGACY_ACCOUNT, "2", PASSWORD, self.provider.origin + ENDPOINT_PATH,
                  config=config)
         self.provider.take()
@@ -552,8 +557,8 @@ class Harness:
         require(command("status", session)["state"] == "active", "new session is not active")
         request, client = seal(offered, enrollment)
         before = self.snapshot(database)
-        offer("--intent", "add_receiver", error="unsupported_intent")
-        submit({**request, "intent": "add_receiver"}, error="unsupported_intent")
+        offer("--intent", "add_receiver", error="invalid_offer")
+        submit({**request, "intent": "add_receiver"}, error="invalid_envelope")
         submit({**request, "intent": "unknown"}, error="invalid_request")
         submit({**request, "intent": {"pair_bridge": None}}, error="invalid_request")
         submit([request[name] for name in ("pairing_version", "session_id", "intent", "client_public_key", "nonce", "ciphertext")],
@@ -588,7 +593,7 @@ class Harness:
         disallowed = self.make_config(**settings, allowed_uuids=[ACCOUNT])
         submit(request, active_config=disallowed, error="invalid_enrollment")
         require(self.snapshot(database) == before, "rejected pairing changed persistent state")
-        self.mark("QR offer and TTL defaults; strict envelope and transcript checks; reserved intent and disallowed enrollment leave state untouched")
+        self.mark("QR offer and TTL defaults; strict envelope and transcript checks; cross-intent and disallowed enrollment leave state untouched")
 
         other_origin = f"http://127.0.0.1:{fresh_port()}"
         multi = self.make_config(**settings, allowed_endpoints=[self.provider.origin, other_origin])
@@ -945,6 +950,253 @@ class Harness:
         self.worker_files = None
         require(returncode == 0, "push-only server did not shut down cleanly")
 
+    def receiver_fanout(self):
+        from cryptography.exceptions import InvalidTag
+        from cryptography.hazmat.primitives.asymmetric import ec, x25519
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        self.stage = "v4 active-bridge pairing and migration"
+        contract = ROOT / "contracts/pairing/v1"
+        spec = importlib.util.spec_from_file_location("pairing_v4_client", contract / "tools/conformance.py")
+        pairing = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pairing)
+        fixtures = ROOT / "contracts/encrypted-push/v4/fixtures"
+        database = self.directory / "receiver-state" / "state.db"
+        config = self.make_config(db=str(database),
+                                  vapid_privkey="DSqYuWchrB6yIMYJtidvqANeRQic4uWy34afzZRsZnI")
+
+        def call(*args, **options):
+            return self.cli(*args, config=config, **options)
+
+        def offer(add=True, **options):
+            args = ("--intent", "add_receiver", "--account-id", ACCOUNT) if add else ()
+            return call("pairing", "create", "--host-label", "Receiver lab", *args, **options)
+
+        def pair(offered, value, **options):
+            client = x25519.X25519PrivateKey.generate()
+            request = pairing.seal_request(offered, client, os.urandom(12), compact(value))
+            receipt = call("pairing", "submit", "--stdin", data=compact(request), **options)
+            if "error" not in options:
+                return pairing.open_receipt(offered, request, receipt, client)
+
+        def status(read_only=True):
+            before = self.snapshot(database) if read_only else None
+            result = call("enrollment", "status", ACCOUNT)["enrollments"]
+            if read_only:
+                require(self.snapshot(database) == before, "v4 status modified the database")
+            return {row["receiver_id"]: row for row in result}
+
+        def revoke(receiver, expected):
+            require(call("enrollment", "revoke", "--account-id", ACCOUNT,
+                         "--receiver-id", receiver["receiver_id"]) == {"revoked": expected},
+                    "v4 revoke reported the wrong change")
+
+        offer(error="not_found")
+        legacy = json.loads((ROOT / "contracts/encrypted-push/v3/fixtures/enrollment-keyed-v3.json").read_text())
+        legacy["password"] = "SYNTHETIC-V4-BRIDGE-PASSWORD"
+        legacy["subscription"].update(endpoint=self.provider.origin + ENDPOINT_PATH,
+                                      p256dh=self.metadata["p256dh"], auth=self.metadata["auth"])
+        self.import_value(legacy, config=config)
+        legacy_lease = self.rows("SELECT * FROM encrypted_push_queue", database=database)
+        session = offer(add=False)["session_id"]
+        pairing_rows = self.rows("SELECT * FROM pairing_sessions", database=database)
+        with sqlite3.connect(database) as db:
+            db.executescript("""
+                DROP TABLE receiver_pairing_targets;
+                DROP TABLE receiver_push_queue;
+                DROP TABLE receiver_enrollment_requests;
+                DROP TABLE receiver_bridges;
+                DROP TABLE push_receivers;
+                DROP TRIGGER receiver_bridge_insert_guard;
+                DROP TRIGGER receiver_bridge_update_guard;
+                DROP TRIGGER receiver_bridge_delete_guard;
+                PRAGMA user_version=6;
+            """)
+        require(call("migrate") == {"schema_version": 7}, "schema 6 did not migrate")
+        require(self.rows("SELECT * FROM encrypted_push_queue", database=database) == legacy_lease and
+                self.rows("SELECT * FROM pairing_sessions", database=database) == pairing_rows,
+                "schema 7 migration changed legacy queue or pairing sessions")
+        call("pairing", "cancel", session)
+        with sqlite3.connect(database) as db:
+            db.execute("UPDATE connections SET forbidden=1")
+        offer(error="not_found")
+        with sqlite3.connect(database) as db:
+            db.execute("UPDATE connections SET forbidden=0")
+        self.mark("schema6 migration preserves pending v3 event and pairing session; add_receiver requires a non-forbidden encrypted bridge")
+
+        paths = ["/SYNTHETIC-V4-SECONDARY-PATH", "/SYNTHETIC-V4-THIRD-PATH"]
+        receivers, keys = [], []
+        for index, path in enumerate(paths, 1):
+            receiver = json.loads((fixtures / "receiver.json").read_text())
+            private = ec.generate_private_key(ec.SECP256R1())
+            auth = bytes([220 + index] * 16)
+            public = private.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+            receiver.update(receiver_id=identifier(460 + index), request_id=identifier(470 + index),
+                            control_key=encoded(bytes([136 + index] * 32)), label=f"Phone {index}")
+            receiver["subscription"].update(endpoint=self.provider.origin + path,
+                                            p256dh=encoded(public), auth=encoded(auth))
+            receivers.append(receiver)
+            keys.append((private, auth))
+        a, b = receivers
+        invite = offer()
+        before = self.snapshot(database)
+        pair(invite, {**a, "account_id": OTHER_ACCOUNT}, error="invalid_enrollment")
+        pair(invite, {**a, "device_id": a["device_id"] + 1}, error="invalid_session")
+        pair(invite, {**a, "password": legacy["password"]}, error="invalid_enrollment")
+        require(self.snapshot(database) == before, "rejected receiver import changed state")
+        bridge_only = offer(add=False)
+        pair(bridge_only, a, error="invalid_enrollment")
+        call("pairing", "cancel", bridge_only["session_id"])
+        require(call("pairing", "status", invite["session_id"])["state"] == "active",
+                "invalid receiver import consumed its invitation")
+        require(self.rows("SELECT count(*) FROM push_receivers", database=database) == [(0,)],
+                "invalid receiver import created a route")
+        receipt = pair(invite, a)
+        require(receipt["receiver_id"] == a["receiver_id"] and receipt["request_id"] == a["request_id"]
+                and receipt["replayed"] is False, "add_receiver did not return its authenticated v4 receipt")
+        pair(invite, b, error="session_consumed")
+        extra_invite = offer()
+        pair(extra_invite, {**b, "receiver_id": a["receiver_id"]}, error="epoch_conflict")
+        pair(extra_invite, {**b, "control_key": a["control_key"]}, error="invalid_enrollment")
+        bad_endpoint = copy.deepcopy(b)
+        bad_endpoint["subscription"]["endpoint"] = "https://other.example.invalid/private"
+        pair(extra_invite, bad_endpoint, error="invalid_endpoint")
+        pair(extra_invite, b)
+        statuses = status()
+        require(list(statuses) == [None, a["receiver_id"], b["receiver_id"]]
+                and statuses[None]["mode"] == "encrypted_v3"
+                and statuses[a["receiver_id"]]["label"] == a["label"]
+                and statuses[b["receiver_id"]]["mode"] == "encrypted_v4",
+                "status lost a legacy or v4 route")
+        self.mark("sealed add_receiver binds account, device, intent and provider; receiver IDs and control keys are independent")
+
+        def capture(expected, kind, code=None):
+            events = {}
+            for _ in expected:
+                path, headers, body = self.provider.take(timeout=5)
+                require(path in expected and path not in events, "fan-out missed or repeated a route")
+                require(headers.get("content-encoding") == "aes128gcm" and len(body) == 4096,
+                        "fan-out route did not use encrypted Web Push")
+                if path == ENDPOINT_PATH:
+                    event = json.loads(self.checker.decrypt(body, self.private, self.auth))
+                    require(event["version"] == 3 and event["import_id"] == legacy["request_id"],
+                            "v3 primary lost its legacy event identity")
+                else:
+                    index = paths.index(path)
+                    private, auth = keys[index]
+                    event = json.loads(self.checker.decrypt(body, private, auth))
+                    target = receivers[index]
+                    require(event["version"] == 4 and event["receiver_id"] == target["receiver_id"]
+                            and event["import_id"] == target["request_id"]
+                            and event["instance"] == target["subscription"]["instance"]
+                            and event["subscription_epoch"] == 1,
+                            "v4 ciphertext has the wrong receiver state")
+                    wrong_private, wrong_auth = keys[1 - index]
+                    try:
+                        self.checker.decrypt(body, wrong_private, wrong_auth)
+                    except InvalidTag:
+                        pass
+                    else:
+                        raise CheckFailure("v4 ciphertext authenticated under the other receiver's keys")
+                require(event["kind"] == kind and event.get("code") == code,
+                        "fan-out produced an unexpected event")
+                events[path] = event["event_id"]
+            require(len(set(events.values())) == len(events), "fan-out reused event IDs")
+            return events
+
+        for _ in range(3):
+            call("push", "drain", "--once")
+        capture([ENDPOINT_PATH, *paths], "status", "enrollment_imported")
+        self.stage = "concurrent v4 provider attempts and failure isolation"
+        ready_port = fresh_port()
+        worker_config = self.make_config(db=str(database), ready_port=ready_port)
+        self.worker_files = tuple((self.directory / f"v4-worker.{name}").open("w+b")
+                                  for name in ("stdout", "stderr"))
+        self.worker = subprocess.Popen(
+            [str(self.binary), "--config", str(worker_config), "server"],
+            cwd=self.directory, env=self.env, stdin=subprocess.DEVNULL,
+            stdout=self.worker_files[0], stderr=self.worker_files[1],
+        )
+        release = threading.Event()
+
+        def slow_rejection():
+            release.wait(8)
+            return 410
+
+        self.provider.respond_by_path[paths[0]] = slow_rejection
+        try:
+            queue_receipt = call("push", "wake", ACCOUNT)
+            events = capture([ENDPOINT_PATH, *paths], "wake")
+            require(set(events.values()) == set(queue_receipt["event_ids"]), "fan-out receipt mismatched ciphertext")
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                queued = self.rows("SELECT (SELECT count(*) FROM encrypted_push_queue) + "
+                                   "(SELECT count(*) FROM receiver_push_queue)", database=database)
+                if queued == [(1,)]:
+                    break
+                time.sleep(0.02)
+            require(queued == [(1,)], "slow provider blocked another receiver")
+        finally:
+            release.set()
+            del self.provider.respond_by_path[paths[0]]
+        deadline = time.monotonic() + 5
+        while status(read_only=False)[a["receiver_id"]]["state"] == "active" and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.stop_worker()
+        require(status()[a["receiver_id"]]["state"] == "stale"
+                and status()[b["receiver_id"]]["state"] == "active" and status()[None]["active"],
+                "provider failure changed the bridge or another receiver")
+        self.mark("three concurrent routes decrypt with only their own keys; slow HTTP410 does not block or retire healthy routes")
+
+        self.stage = "v4 primary upgrade and target-only revocation"
+        invite = offer()
+        new_primary = json.loads((fixtures / "bridge.json").read_text())
+        new_primary["password"] = legacy["password"]
+        new_primary["subscription"].update(
+            subscription_epoch=2, endpoint=self.provider.origin + "/SYNTHETIC-V4-PRIMARY-PATH")
+        bridge_offer = offer(add=False)
+        pair(bridge_offer, {**new_primary, "device_id": legacy["device_id"] + 1}, error="epoch_conflict")
+        pair(bridge_offer, new_primary)
+        pending = json.loads((fixtures / "receiver.json").read_text())
+        pending["subscription"]["endpoint"] = self.provider.origin + paths[1]
+        pair(invite, pending, error="invalid_session")
+        require(status()[b["receiver_id"]]["subscription_epoch"] == 1 and None not in status(),
+                "primary upgrade disturbed a sibling or kept the legacy route live")
+        require(self.rows("SELECT device_id,password FROM connections", database=database)
+                == [(legacy["device_id"], legacy["password"])], "primary upgrade re-linked Signal")
+        require(self.import_value(legacy, config=config)["replayed"], "primary upgrade discarded a v3 receipt")
+        call("push", "wake", ACCOUNT)
+        revoke(b, True)
+        revoke(b, False)
+        require(status()[b["receiver_id"]]["state"] == "revoked"
+                and not status()[b["receiver_id"]]["has_control_key"]
+                and status()[new_primary["receiver_id"]]["active"],
+                "revocation affected a sibling or retained the target key")
+        require(self.rows("SELECT count(*) FROM receiver_push_queue WHERE receiver_id=?",
+                          (b["receiver_id"],), database) == [(0,)], "revoked queue was retained")
+        pair(offer(), {**b, "request_id": identifier(490)}, error="epoch_conflict")
+        # Replacing a revoked primary requires an unused receiver identity.
+        revoke(new_primary, True)
+        replacement = copy.deepcopy(new_primary)
+        replacement.update(receiver_id=identifier(491), request_id=identifier(492),
+                           control_key=encoded(bytes([211] * 32)), password="SYNTHETIC-V4-NEW-PASSWORD")
+        replacement["subscription"]["subscription_epoch"] = 1
+        pair(offer(add=False), replacement)
+        require(status()[new_primary["receiver_id"]]["state"] == "revoked"
+                and status()[replacement["receiver_id"]]["active"], "primary replacement revived a revoked UUID")
+        require(call("connection", "remove", ACCOUNT) == {"removed": True, "signal_unlinked": False},
+                "account removal did not clear its v4 routes")
+        self.mark("v4 pair_bridge upgrades v3 without re-linking; old invitations cannot submit; revoke and primary replacement preserve sibling state")
+
+        canaries = [legacy["password"], replacement["password"], replacement["control_key"],
+                    "SYNTHETIC-V4-PRIMARY-PATH", *paths]
+        for receiver in receivers:
+            canaries += [receiver["control_key"], receiver["subscription"]["auth"],
+                         receiver["subscription"]["p256dh"]]
+        require(all(canary.encode() not in output for canary in canaries for output in self.outputs),
+                "v4 CLI or worker trace exposed a credential")
+        self.mark("v4 worker and pairing trace redact receiver endpoints, keys, auth secrets and bridge passwords")
+
     def redaction_and_removal(self):
         self.stage = "trace redaction and explicit local removal"
         self.cli("connection", "list")
@@ -976,6 +1228,7 @@ class Harness:
         self.legacy_boundaries()
         self.worker_and_discovery()
         self.redaction_and_removal()
+        self.receiver_fanout()
 
 
 def main():
