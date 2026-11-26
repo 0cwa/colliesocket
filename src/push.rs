@@ -228,7 +228,7 @@ fn claim_is_current(claim: &QueuedEvent) -> Result<bool, &'static str> {
 
 fn finish(claim: &QueuedEvent, outcome: DeliveryOutcome) -> Result<(), &'static str> {
     PushStore::open(config::get_db())
-        .and_then(|mut store| store.complete(claim, outcome, now()))
+        .and_then(|mut store| store.complete(claim, outcome, now))
         .map_err(|e| e.code())
 }
 

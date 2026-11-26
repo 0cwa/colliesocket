@@ -1323,15 +1323,18 @@ impl PushStore {
         &mut self,
         claim: &QueuedEvent,
         outcome: DeliveryOutcome,
-        now: i64,
+        clock: impl FnOnce() -> i64,
     ) -> Result<()> {
-        if now < 0 || now as u64 > MAX_JSON_INTEGER {
-            return Err(StoreError::StateUnavailable);
-        }
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some((attempt, expires, lease_until)) = current_claim(&tx, claim)? else {
+        let current = current_claim(&tx, claim)?;
+        // A busy writer can hold this transaction past the lease deadline.
+        let now = clock();
+        if now < 0 || now as u64 > MAX_JSON_INTEGER {
+            return Err(StoreError::StateUnavailable);
+        }
+        let Some((attempt, expires, lease_until)) = current else {
             return Ok(());
         };
         if claim.receiver_generation.is_some() && (expires <= now || lease_until <= now) {
@@ -3157,7 +3160,9 @@ mod tests {
             assert_eq!(claim.attempt, index as u32 + 1);
             if claim.attempt < MAX_ATTEMPTS {
                 store
-                    .complete(&claim, DeliveryOutcome::Retry { retry_after: None }, when)
+                    .complete(&claim, DeliveryOutcome::Retry { retry_after: None }, || {
+                        when
+                    })
                     .unwrap();
             } else {
                 fourth_claim = Some(claim);
@@ -4026,7 +4031,7 @@ mod tests {
         store.enqueue(ACCOUNT, &event(&e, 11), NOW).unwrap();
         let obsolete_claim = store.claim_due(NOW).unwrap().unwrap();
         store
-            .complete(&obsolete_claim, DeliveryOutcome::Gone, NOW)
+            .complete(&obsolete_claim, DeliveryOutcome::Gone, || NOW)
             .unwrap();
         assert_eq!(
             store.account_state(ACCOUNT).unwrap(),
@@ -4109,7 +4114,7 @@ mod tests {
         assert_eq!(status.event, first);
         assert_eq!(status.subscription, updated);
         store
-            .complete(&status, DeliveryOutcome::Accepted, NOW + 40)
+            .complete(&status, DeliveryOutcome::Accepted, || NOW + 40)
             .unwrap();
         // Provider acceptance isn't phone receipt: an identical replay can
         // recover a lost confirmation, bounded to one every thirty seconds.
@@ -4128,7 +4133,7 @@ mod tests {
         let status = store.claim_due(NOW + 40).unwrap().unwrap();
         assert_eq!(status.event, retry);
         store
-            .complete(&status, DeliveryOutcome::Accepted, NOW + 41)
+            .complete(&status, DeliveryOutcome::Accepted, || NOW + 41)
             .unwrap();
         let throttled = confirmation(&updated, 14, NOW + 42);
         store
@@ -4158,7 +4163,7 @@ mod tests {
         assert_eq!(store.pending_count(None).unwrap(), 1);
         // A late provider callback from before rotation cannot stale the new epoch.
         store
-            .complete(&obsolete_claim, DeliveryOutcome::Gone, NOW + 72)
+            .complete(&obsolete_claim, DeliveryOutcome::Gone, || NOW + 72)
             .unwrap();
         assert_eq!(
             store.account_state(ACCOUNT).unwrap(),
@@ -4166,7 +4171,7 @@ mod tests {
         );
         let status = store.claim_due(NOW + 72).unwrap().unwrap();
         store
-            .complete(&status, DeliveryOutcome::Gone, NOW + 72)
+            .complete(&status, DeliveryOutcome::Gone, || NOW + 72)
             .unwrap();
         let inactive_retry = confirmation(&updated, 16, NOW + 110);
         assert_eq!(
@@ -4921,7 +4926,9 @@ mod tests {
             assert_eq!(claim.attempt, index as u32 + 1);
             if index != 3 {
                 store
-                    .complete(&claim, DeliveryOutcome::Retry { retry_after: None }, when)
+                    .complete(&claim, DeliveryOutcome::Retry { retry_after: None }, || {
+                        when
+                    })
                     .unwrap();
             }
         }
@@ -5320,7 +5327,7 @@ mod tests {
         );
         assert_eq!(store.pending_count(None).unwrap(), 0);
         store
-            .complete(&old, DeliveryOutcome::Gone, NOW + 2)
+            .complete(&old, DeliveryOutcome::Gone, || NOW + 2)
             .unwrap();
         assert_eq!(
             store.account_state(ACCOUNT).unwrap(),
@@ -5330,7 +5337,7 @@ mod tests {
         store.enqueue(ACCOUNT, &active, NOW + 2).unwrap();
         let claim = store.claim_due(NOW + 2).unwrap().unwrap();
         store
-            .complete(&claim, DeliveryOutcome::Gone, NOW + 3)
+            .complete(&claim, DeliveryOutcome::Gone, || NOW + 3)
             .unwrap();
         assert_eq!(
             store.account_state(ACCOUNT).unwrap(),
@@ -5512,7 +5519,7 @@ mod tests {
         assert!(!store.enqueue(ACCOUNT, &ev, NOW).unwrap());
         let claim = store.claim_due(NOW).unwrap().unwrap();
         store
-            .complete(&claim, DeliveryOutcome::Accepted, NOW + 1)
+            .complete(&claim, DeliveryOutcome::Accepted, || NOW + 1)
             .unwrap();
         assert_eq!(store.pending_count(None).unwrap(), 0);
         assert!(!store.enqueue(ACCOUNT, &ev, NOW + 2).unwrap());
@@ -5551,7 +5558,7 @@ mod tests {
             let claim = store.claim_due(at).unwrap().unwrap();
             assert_eq!(claim.attempt, attempt);
             store
-                .complete(&claim, DeliveryOutcome::Retry { retry_after: None }, at)
+                .complete(&claim, DeliveryOutcome::Retry { retry_after: None }, || at)
                 .unwrap();
             assert!(store.claim_due(next - 1).unwrap().is_none());
         }
@@ -5564,7 +5571,7 @@ mod tests {
                 DeliveryOutcome::Retry {
                     retry_after: Some(u32::MAX),
                 },
-                NOW,
+                || NOW,
             )
             .unwrap();
         assert!(store.claim_due(NOW + 119).unwrap().is_none());
@@ -5575,7 +5582,7 @@ mod tests {
                 DeliveryOutcome::Retry {
                     retry_after: Some(120),
                 },
-                NOW + 299,
+                || NOW + 299,
             )
             .unwrap();
         assert_eq!(store.pending_count(None).unwrap(), 0);
@@ -5595,7 +5602,7 @@ mod tests {
         let resumed = store.claim_due(NOW + 30).unwrap().unwrap();
         assert_eq!(resumed.attempt, 2);
         store
-            .complete(&abandoned, DeliveryOutcome::Gone, NOW + 31)
+            .complete(&abandoned, DeliveryOutcome::Gone, || NOW + 31)
             .unwrap();
         assert_eq!(
             store.account_state(ACCOUNT).unwrap(),
@@ -5625,7 +5632,7 @@ mod tests {
             store.enqueue(ACCOUNT, &event(&e, 11), NOW).unwrap();
             store.enqueue(ACCOUNT, &event(&e, 12), NOW).unwrap();
             let claim = store.claim_due(NOW).unwrap().unwrap();
-            store.complete(&claim, outcome, NOW + 300).unwrap();
+            store.complete(&claim, outcome, || NOW + 300).unwrap();
             assert_eq!(store.account_state(ACCOUNT).unwrap(), Some(state));
             assert_eq!(store.pending_count(None).unwrap(), 0);
             assert!(!store
@@ -6055,7 +6062,7 @@ mod tests {
         );
         assert!(store.claim_is_current(&claim, NOW).unwrap());
         store
-            .complete(&claim, DeliveryOutcome::Accepted, NOW)
+            .complete(&claim, DeliveryOutcome::Accepted, || NOW)
             .unwrap();
         assert_eq!(store.pending_count(None).unwrap(), 0);
     }
@@ -6125,7 +6132,7 @@ mod tests {
         assert!(store.claim_is_current(&legacy_claim, now + 1).unwrap());
         assert!(!store.claim_is_current(&receiver_claim, now + 1).unwrap());
         store
-            .complete(&receiver_claim, DeliveryOutcome::Gone, now + 1)
+            .complete(&receiver_claim, DeliveryOutcome::Gone, || now + 1)
             .unwrap();
         let rotated = store.claim_due(now + 1).unwrap().unwrap();
         assert_eq!(rotated.event.subscription_epoch, 5);
@@ -6173,7 +6180,7 @@ mod tests {
             )
             .unwrap();
         store
-            .complete(&rotated, DeliveryOutcome::ProviderRejected, now + 2)
+            .complete(&rotated, DeliveryOutcome::ProviderRejected, || now + 2)
             .unwrap();
         assert!(store
             .receiver_control(&co, &bridge, &receiver.receiver_id)
@@ -6181,7 +6188,7 @@ mod tests {
             .is_none());
         assert!(store.claim_is_current(&legacy_claim, now + 2).unwrap());
         store
-            .complete(&legacy_claim, DeliveryOutcome::Accepted, now + 2)
+            .complete(&legacy_claim, DeliveryOutcome::Accepted, || now + 2)
             .unwrap();
         assert_eq!(
             store
@@ -6196,6 +6203,15 @@ mod tests {
     #[test]
     fn v4_late_provider_rejection_leaves_the_receiver_and_queue_active() {
         use crate::receiver_enrollment::ReceiverEnrollment;
+        use std::{
+            cell::Cell,
+            sync::{atomic::AtomicI64, mpsc},
+        };
+
+        thread_local! {
+            static WRITE_LOCK_GATE: Cell<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+                const { Cell::new(None) };
+        }
 
         let primary: ReceiverEnrollment = serde_json::from_str(include_str!(
             "../contracts/encrypted-push/v4/fixtures/bridge.json"
@@ -6223,10 +6239,39 @@ mod tests {
                 .unwrap();
             let late_at = claim_at + if claim_near_expiry { 1 } else { LEASE_SECONDS };
             assert!(current_claim(&store.db, &claim).unwrap().is_some());
-            assert!(!store.claim_is_current(&claim, late_at).unwrap());
-            store
-                .complete(&claim, DeliveryOutcome::Gone, late_at)
+            assert!(store.claim_is_current(&claim, late_at - 1).unwrap());
+
+            let mut completion_store = dir.store();
+            completion_store
+                .db
+                .busy_handler(Some(|_| {
+                    WRITE_LOCK_GATE.with(|gate| {
+                        gate.take().is_some_and(|(waiting, released)| {
+                            waiting.send(()).is_ok()
+                                && released.recv_timeout(Duration::from_secs(5)).is_ok()
+                        })
+                    })
+                }))
                 .unwrap();
+            let writer = store
+                .db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            let clock = AtomicI64::new(late_at - 1);
+            let read_time = || clock.load(Ordering::Relaxed);
+            let (waiting, wait) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            std::thread::scope(|scope| {
+                let completion = scope.spawn(move || {
+                    WRITE_LOCK_GATE.set(Some((waiting, released)));
+                    completion_store.complete(&claim, DeliveryOutcome::Gone, read_time)
+                });
+                wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                clock.store(late_at, Ordering::Relaxed);
+                writer.rollback().unwrap();
+                release.send(()).unwrap();
+                completion.join().unwrap().unwrap();
+            });
             let queued = store
                 .db
                 .query_row(
