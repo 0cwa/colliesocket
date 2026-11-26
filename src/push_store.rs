@@ -6077,7 +6077,8 @@ mod tests {
             "../contracts/encrypted-push/v4/fixtures/receiver.json"
         ))
         .unwrap();
-        let now = crate::push::now();
+        // Exercise pairing committing on a later clock tick than setup.
+        let setup_at = crate::push::now() - 1;
         let mut legacy = v3_enrollment();
         legacy.account_id.clone_from(&receiver.account_id);
         legacy.device_id = receiver.device_id;
@@ -6085,12 +6086,26 @@ mod tests {
         let co = connection(&legacy);
         let session = id(413);
         assert_eq!(
-            store.create_pairing(&session, now, now + 300, "{}", &[9; 32], Some(account)),
+            store.create_pairing(
+                &session,
+                setup_at,
+                setup_at + 300,
+                "{}",
+                &[9; 32],
+                Some(account)
+            ),
             Err(StoreError::SubscriptionMissing)
         );
-        store.enroll(&legacy, now).unwrap();
+        store.enroll(&legacy, setup_at).unwrap();
         store
-            .create_pairing(&session, now, now + 300, "{}", &[9; 32], Some(account))
+            .create_pairing(
+                &session,
+                setup_at,
+                setup_at + 300,
+                "{}",
+                &[9; 32],
+                Some(account),
+            )
             .unwrap();
         store
             .enroll_receiver_pairing(&session, &receiver, Ok)
@@ -6099,6 +6114,16 @@ mod tests {
             .private_generation_for_connection(&co)
             .unwrap()
             .unwrap();
+        // The receiver confirmation is due at the pairing transaction's time.
+        let receiver_due: i64 = store
+            .db
+            .query_row(
+                "SELECT next_attempt_at FROM receiver_push_queue",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let now = setup_at.max(receiver_due);
         let a = store.claim_due(now).unwrap().unwrap();
         let b = store.claim_due(now).unwrap().unwrap();
         let (legacy_claim, receiver_claim) = if a.event.version == 3 { (a, b) } else { (b, a) };
