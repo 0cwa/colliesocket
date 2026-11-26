@@ -361,7 +361,14 @@ impl SignalWebSocket {
             return Ok(());
         }
         match PushStore::open(config::get_db()).and_then(|mut store| {
-            store.apply_receiver_control(co, generation, receiver, context, &update, push::now())
+            store.apply_receiver_control(
+                co,
+                generation,
+                receiver,
+                &context.key,
+                &update,
+                push::now(),
+            )
         }) {
             Err(
                 StoreError::StateUnavailable | StoreError::QueueFull | StoreError::CapacityExceeded,

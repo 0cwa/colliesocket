@@ -351,11 +351,15 @@ fn update_bridge(
         params![account, enrollment.receiver_id, device, password, token()?],
     )?;
     if inserted == 0 {
-        tx.execute(
-            "UPDATE connections SET forbidden=CASE WHEN device_id IS NOT ?2 OR password IS NOT ?3 THEN 0 ELSE forbidden END,
-             device_id=?2,password=?3,endpoint=?4,last_registration=?5 WHERE uuid=?1",
+        // Rejected Signal credentials cannot authorize a new enrollment.
+        let changed = tx.execute(
+            "UPDATE connections SET forbidden=0,device_id=?2,password=?3,endpoint=?4,last_registration=?5
+             WHERE uuid=?1 AND (forbidden=0 OR device_id IS NOT ?2 OR password IS NOT ?3)",
             params![account,device,password,BRIDGE_ENDPOINT,now],
         )?;
+        if changed == 0 {
+            return Err(StoreError::InvalidEnrollment);
+        }
     }
     Ok(())
 }
@@ -541,7 +545,6 @@ fn is_enrolled(db: &Connection, account: &str) -> Result<bool> {
 pub(crate) struct ReceiverControl {
     pub subscription: Subscription,
     pub key: String,
-    generation: String,
 }
 
 impl PushStore {
@@ -555,19 +558,18 @@ impl PushStore {
         if !current_socket(&snapshot, co, bridge)? {
             return Ok(None);
         }
-        let row: Option<(String, String, String)> = snapshot
+        let row: Option<(String, String)> = snapshot
             .query_row(
-                "SELECT subscription_json,control_key,generation FROM push_receivers
+                "SELECT subscription_json,control_key FROM push_receivers
              WHERE account_id=?1 AND receiver_id=?2 AND state!='revoked'",
                 params![co.uuid, receiver],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        row.map(|(json, key, generation)| {
+        row.map(|(json, key)| {
             Ok(ReceiverControl {
                 subscription: serde_json::from_str(&json)?,
                 key,
-                generation,
             })
         })
         .transpose()
@@ -578,7 +580,7 @@ impl PushStore {
         co: &crate::db::Connection,
         bridge: &str,
         receiver: &str,
-        context: ReceiverControl,
+        expected_key: &str,
         update: &crate::control::AuthenticatedUpdate,
         now: i64,
     ) -> Result<()> {
@@ -588,17 +590,19 @@ impl PushStore {
         if !current_socket(&tx, co, bridge)? {
             return Ok(());
         }
-        let row: Option<(String,String,String,Option<Vec<u8>>,Option<i64>)> = tx.query_row(
-            "SELECT subscription_json,import_id,state,last_control_digest,control_status_at FROM push_receivers
-             WHERE account_id=?1 AND receiver_id=?2 AND generation=?3 AND state!='revoked' AND control_key=?4",
-            params![co.uuid,receiver,context.generation,context.key],
-            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+        // Another control can rotate the route while destination policy is being
+        // checked. A same-key control still applies against the latest epoch.
+        let row = tx.query_row(
+            "SELECT subscription_json,import_id,state,last_control_digest,control_status_at,generation
+             FROM push_receivers WHERE account_id=?1 AND receiver_id=?2 AND state!='revoked' AND control_key=?3",
+            params![co.uuid,receiver,expected_key],
+            |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,
+                    r.get::<_, Option<Vec<u8>>>(3)?,r.get::<_, Option<i64>>(4)?,r.get::<_, String>(5)?)),
         ).optional()?;
-        let Some((json, import_id, state, last_digest, last_status)) = row else {
+        let Some((json, import_id, state, last_digest, last_status, mut generation)) = row else {
             return Ok(());
         };
         let mut subscription: Subscription = serde_json::from_str(&json)?;
-        let generation;
         if update.subscription_epoch > subscription.subscription_epoch {
             subscription
                 .endpoint
@@ -627,12 +631,11 @@ impl PushStore {
                 "SELECT EXISTS(SELECT 1 FROM receiver_push_queue WHERE account_id=?1 AND receiver_id=?2
                  AND receiver_generation=?3 AND expires_at>?4 AND (attempts<4 OR lease_until>?4)
                  AND json_extract(event_json,'$.code')='subscription_updated')",
-                params![co.uuid,receiver,context.generation,now], |r| r.get(0),
+                params![co.uuid,receiver,generation,now], |r| r.get(0),
             )?;
             if pending {
                 return Ok(());
             }
-            generation = context.generation;
         } else {
             return Ok(());
         }

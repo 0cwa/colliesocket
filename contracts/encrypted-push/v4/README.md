@@ -54,8 +54,10 @@ accepts no enrollment traffic.
   queues, keys, credentials, generations, sequences and epochs.
 - A private v4 primary update requires the same receiver UUID, exactly the
   next epoch, an increased sequence and a new control key. It can change the
-  bridge password. A protected bridge import can replace a revoked primary
-  with a previously unused UUID starting at epoch 1. A linked-device ID
+  bridge password. An import that reuses Signal credentials already rejected
+  by Signal fails with `invalid_enrollment` and leaves its pairing offer
+  available for a corrected import. A protected bridge import can replace a
+  revoked primary with a previously unused UUID starting at epoch 1. A linked-device ID
   change requires revoking any non-primary v4 receivers first, because
   controls are bound to the old device ID.
 - Receipt replay is scoped to the account, receiver and request ID. Reusing

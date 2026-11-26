@@ -1181,12 +1181,23 @@ class Harness:
         replacement.update(receiver_id=identifier(491), request_id=identifier(492),
                            control_key=encoded(bytes([211] * 32)), password="SYNTHETIC-V4-NEW-PASSWORD")
         replacement["subscription"]["subscription_epoch"] = 1
-        pair(offer(add=False), replacement)
+        replacement_offer = offer(add=False)
+        with sqlite3.connect(database) as db:
+            db.execute("UPDATE connections SET forbidden=1")
+        before = self.snapshot(database)
+        pair(replacement_offer, {**replacement, "password": legacy["password"]},
+             error="invalid_enrollment")
+        require(self.snapshot(database) == before,
+                "rejected Signal credentials changed state or consumed the pairing session")
+        pair(replacement_offer, replacement)
+        require(self.rows("SELECT forbidden FROM connections", database=database) == [(0,)],
+                "corrected bridge credentials did not clear the rejection")
         require(status()[new_primary["receiver_id"]]["state"] == "revoked"
                 and status()[replacement["receiver_id"]]["active"], "primary replacement revived a revoked UUID")
         require(call("connection", "remove", ACCOUNT) == {"removed": True, "signal_unlinked": False},
                 "account removal did not clear its v4 routes")
         self.mark("v4 pair_bridge upgrades v3 without re-linking; old invitations cannot submit; revoke and primary replacement preserve sibling state")
+        self.mark("known-rejected Signal credentials leave v4 bridge pairing available for correction")
 
         canaries = [legacy["password"], replacement["password"], replacement["control_key"],
                     "SYNTHETIC-V4-PRIMARY-PATH", *paths]

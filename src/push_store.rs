@@ -1331,9 +1331,12 @@ impl PushStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some((attempt, expires, _)) = current_claim(&tx, claim)? else {
+        let Some((attempt, expires, lease_until)) = current_claim(&tx, claim)? else {
             return Ok(());
         };
+        if claim.receiver_generation.is_some() && (expires <= now || lease_until <= now) {
+            return Ok(());
+        }
         let queue = queue_table(claim.receiver_generation.is_some());
         match outcome {
             DeliveryOutcome::Gone | DeliveryOutcome::ProviderRejected => {
@@ -6114,7 +6117,7 @@ mod tests {
                 &co,
                 &bridge,
                 &receiver.receiver_id,
-                context,
+                &context.key,
                 &update,
                 now + 1,
             )
@@ -6130,6 +6133,24 @@ mod tests {
             rotated.event.import_id.as_deref(),
             Some(receiver.request_id.as_str())
         );
+        // A second control authenticated with the original key before the
+        // first rotation committed. The higher epoch still advances the route.
+        let mut next_update = update;
+        next_update.subscription_epoch += 1;
+        next_update.digest = [0x36; 32];
+        store
+            .apply_receiver_control(
+                &co,
+                &bridge,
+                &receiver.receiver_id,
+                &context.key,
+                &next_update,
+                now + 2,
+            )
+            .unwrap();
+        assert!(!store.claim_is_current(&rotated, now + 2).unwrap());
+        let rotated = store.claim_due(now + 2).unwrap().unwrap();
+        assert_eq!(rotated.event.subscription_epoch, 6);
         let context = store
             .receiver_control(&co, &bridge, &receiver.receiver_id)
             .unwrap()
@@ -6146,8 +6167,8 @@ mod tests {
                 &co,
                 &bridge,
                 &receiver.receiver_id,
-                context,
-                &update,
+                &context.key,
+                &next_update,
                 now + 2,
             )
             .unwrap();
@@ -6170,6 +6191,53 @@ mod tests {
             1
         );
         assert_eq!(store.claim_due(now + 2).unwrap().unwrap().event.version, 3);
+    }
+
+    #[test]
+    fn v4_late_provider_rejection_leaves_the_receiver_and_queue_active() {
+        use crate::receiver_enrollment::ReceiverEnrollment;
+
+        let primary: ReceiverEnrollment = serde_json::from_str(include_str!(
+            "../contracts/encrypted-push/v4/fixtures/bridge.json"
+        ))
+        .unwrap();
+        for claim_near_expiry in [false, true] {
+            let dir = TestDir::new();
+            let mut store = dir.store();
+            let account = &primary.account_id;
+            store.enroll_receiver(&primary, NOW).unwrap();
+            let expires_at: i64 = store
+                .db
+                .query_row("SELECT expires_at FROM receiver_push_queue", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            let claim_at = if claim_near_expiry {
+                expires_at - 1
+            } else {
+                NOW
+            };
+            let claim = store.claim_due(claim_at).unwrap().unwrap();
+            let wake = store
+                .enqueue_routes(account, None, "wake", None, claim_at)
+                .unwrap();
+            let late_at = claim_at + if claim_near_expiry { 1 } else { LEASE_SECONDS };
+            assert!(current_claim(&store.db, &claim).unwrap().is_some());
+            assert!(!store.claim_is_current(&claim, late_at).unwrap());
+            store
+                .complete(&claim, DeliveryOutcome::Gone, late_at)
+                .unwrap();
+            let queued = store
+                .db
+                .query_row(
+                    "SELECT count(*) FROM receiver_push_queue q JOIN push_receivers r USING(account_id,receiver_id)
+                     WHERE q.event_id=?1 AND r.state='active'",
+                    [&wake[0]],
+                    |row| row_count(row, 0),
+                )
+                .unwrap();
+            assert_eq!(queued, 1);
+        }
     }
 
     #[test]
